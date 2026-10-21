@@ -1,0 +1,548 @@
+// SCMS V1.3 design only. Target MySQL 8.0.16+ / InnoDB / UTC datetime(6).
+// No application code or migrations. Generated column definitions are carried
+// as quoted MySQL types: they MUST NOT become client-writable plain columns.
+Project SCMS_V1_3 {
+  database_type: 'MySQL'
+  Note: 'Design proposal. Resolve policy decisions before implementing affected use cases. All IDs are bigint signed except family IDs binary(16).'
+}
+
+Enum account_state {
+  ACTIVE
+  DISABLED
+}
+Enum global_role {
+  STUDENT
+  ADMIN
+}
+Enum review_state {
+  PENDING
+  APPROVED
+  REJECTED
+}
+Enum club_state {
+  ACTIVE
+  SUSPENDED
+}
+Enum membership_state {
+  ACTIVE
+  LEFT
+  REMOVED
+}
+Enum club_role {
+  MEMBER
+  MANAGER
+}
+Enum event_state {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+  COMPLETED
+}
+Enum event_visibility {
+  PUBLIC_STUDENTS
+  CLUB_MEMBERS_ONLY
+}
+Enum registration_state {
+  REGISTERED
+  CANCELLED
+}
+Enum task_state {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+Enum outbox_state {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  DEAD
+}
+
+Enum ai_turn_state {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+Enum ai_message_role {
+  USER
+  ASSISTANT
+}
+Enum ai_message_state {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+Enum execution_state {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DENIED
+  TIMEOUT
+}
+Enum usage_state {
+  PENDING
+  SUCCEEDED
+  FAILED
+  TIMEOUT
+  UNKNOWN
+}
+Enum usage_source {
+  PROVIDER
+  ESTIMATED
+  UNKNOWN
+}
+
+Table users {
+  id bigint [pk, increment]
+  email_normalized "varchar(254) COLLATE utf8mb4_0900_as_cs" [not null, unique, note: 'Canonical login identifier; normalization and collation are explicit application policy.']
+  full_name varchar(160) [not null]
+  password_hash varchar(255) [not null, note: 'Password KDF encoded value; never plaintext.']
+  global_role global_role [not null, default: 'STUDENT']
+  status account_state [not null, default: 'ACTIVE']
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes { (status, id) [name: 'ix_users_admin_state'] }
+  Note: 'Identity owns global roles. Club roles are in membership episodes. Disable rather than cascade-delete business history.'
+}
+
+Table refresh_token_families {
+  id binary(16) [pk, note: 'Random session/family identifier. One login/device session creates one family.']
+  user_id bigint [not null]
+  created_at datetime(6) [not null]
+  absolute_expires_at datetime(6) [not null]
+  revoked_at datetime(6)
+  revoke_reason varchar(48)
+  suspicious_reuse_at datetime(6)
+  purge_after datetime(6) [not null, note: 'Not earlier than absolute_expires_at plus agreed security retention.']
+  indexes {
+    (user_id, revoked_at, id) [name: 'ix_families_user_sessions']
+    (purge_after, id) [name: 'ix_families_cleanup']
+  }
+  checks {
+    `absolute_expires_at > created_at` [name: 'ck_family_lifetime']
+    `purge_after >= absolute_expires_at` [name: 'ck_family_retention']
+  }
+}
+
+Table refresh_tokens {
+  id bigint [pk, increment]
+  family_id binary(16) [not null]
+  token_hash binary(32) [not null, unique, note: 'SHA-256 or keyed hash of >=256-bit random opaque token. Not a password hash use case.']
+  created_at datetime(6) [not null]
+  expires_at datetime(6) [not null]
+  revoked_at datetime(6)
+  last_used_at datetime(6)
+  rotated_at datetime(6)
+  replaced_by_id bigint [unique, note: 'Optional successor. Service enforces same family and monotonic generation.']
+  generation int [not null]
+  current_guard "tinyint GENERATED ALWAYS AS (CASE WHEN rotated_at IS NULL AND revoked_at IS NULL THEN 1 ELSE NULL END) STORED"
+  indexes {
+    (family_id, generation) [unique, name: 'uq_token_family_generation']
+    (family_id, current_guard) [unique, name: 'uq_token_one_current']
+    expires_at [name: 'ix_tokens_expiry_observation']
+  }
+  checks {
+    `expires_at > created_at` [name: 'ck_token_lifetime']
+    `generation >= 0` [name: 'ck_token_generation']
+  }
+  Note: 'user_id derives through family_id; omitted to avoid duplicate ownership. Keep rotated token tombstones while family remains live. No plaintext recovery of successor.'
+}
+
+Table club_creation_requests {
+  id bigint [pk, increment]
+  requested_by bigint [not null]
+  proposed_name varchar(160) [not null]
+  category varchar(80) [not null, note: 'Free controlled vocabulary proposal, not a taxonomy module.']
+  mission text [not null]
+  initial_plan text [not null]
+  status review_state [not null, default: 'PENDING']
+  reviewed_by bigint
+  reviewed_at datetime(6)
+  rejection_reason varchar(1000)
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes {
+    (requested_by, created_at, id) [name: 'ix_club_requests_mine']
+    (status, created_at, id) [name: 'ix_club_requests_review']
+  }
+  Note: 'No unique normalized club name or one pending request per founder until those policies are approved. Approved request maps to at most one clubs.source_request_id.'
+}
+
+Table clubs {
+  id bigint [pk, increment]
+  source_request_id bigint [not null, unique]
+  name varchar(160) [not null]
+  category varchar(80) [not null]
+  description text [not null]
+  status club_state [not null, default: 'ACTIVE', note: 'SUSPENDED semantics remain an open policy.']
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes { (status, category, id) [name: 'ix_clubs_discovery'] }
+}
+
+Table membership_applications {
+  id bigint [pk, increment]
+  club_id bigint [not null]
+  user_id bigint [not null]
+  motivation varchar(2000)
+  status review_state [not null, default: 'PENDING']
+  pending_guard "tinyint GENERATED ALWAYS AS (CASE WHEN status = 'PENDING' THEN 1 ELSE NULL END) STORED" [note: 'DB-derived guard. Multiple historical terminal rows allowed.']
+  reviewed_by bigint
+  reviewed_at datetime(6)
+  rejection_reason varchar(1000)
+  created_at datetime(6) [not null]
+  indexes {
+    (id, club_id, user_id) [unique, name: 'uq_membership_application_identity']
+    (club_id, user_id, pending_guard) [unique, name: 'uq_membership_pending']
+    (club_id, status, created_at, id) [name: 'ix_membership_review']
+    (user_id, created_at, id) [name: 'ix_membership_app_mine']
+  }
+}
+
+Table club_memberships {
+  id bigint [pk, increment]
+  club_id bigint [not null]
+  user_id bigint [not null]
+  source_application_id bigint [unique, note: 'NULL for initial founder membership. New application for a new membership episode.']
+  role club_role [not null, default: 'MEMBER']
+  status membership_state [not null, default: 'ACTIVE']
+  active_guard "tinyint GENERATED ALWAYS AS (CASE WHEN status = 'ACTIVE' THEN 1 ELSE NULL END) STORED"
+  joined_at datetime(6) [not null]
+  ended_at datetime(6)
+  indexes {
+    (source_application_id, club_id, user_id) [name: 'ix_membership_source_identity']
+    (club_id, user_id, active_guard) [unique, name: 'uq_membership_active']
+    (id, club_id) [unique, name: 'uq_membership_id_club']
+    (user_id, status, club_id, id) [name: 'ix_membership_my_clubs']
+    (club_id, status, role, id) [name: 'ix_membership_manager_list']
+  }
+  checks {
+    `(status = 'ACTIVE' AND ended_at IS NULL) OR (status <> 'ACTIVE' AND ended_at IS NOT NULL)` [name: 'ck_membership_end_state']
+  }
+  Note: 'Each joining episode is retained. Role changes/reassignment are recorded in audit_logs. ACTIVE eligibility requires service validation at the use-case boundary.'
+}
+
+Table events {
+  id bigint [pk, increment]
+  club_id bigint [not null]
+  created_by bigint [not null]
+  title varchar(200) [not null]
+  description text [not null]
+  location varchar(255) [not null]
+  status event_state [not null, default: 'DRAFT']
+  visibility event_visibility [not null]
+  starts_at datetime(6) [not null]
+  ends_at datetime(6) [not null]
+  registration_opens_at datetime(6) [not null]
+  registration_closes_at datetime(6) [not null]
+  cancellation_deadline_at datetime(6) [note: 'NULL means policy unresolved/not configured; never silently unlimited. Require a decision before publishing affected use case.']
+  capacity int [not null]
+  registration_count int [not null, default: 0]
+  version int [not null, default: 0]
+  published_at datetime(6)
+  cancelled_at datetime(6)
+  cancellation_reason varchar(1000)
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes {
+    (id, club_id) [unique, name: 'uq_event_id_club']
+    (club_id, status, starts_at, id) [name: 'ix_events_club']
+    (status, visibility, starts_at, id) [name: 'ix_events_discovery']
+  }
+  checks {
+    `capacity > 0` [name: 'ck_event_capacity']
+    `registration_count >= 0 AND registration_count <= capacity` [name: 'ck_event_count_bounds']
+    `ends_at > starts_at` [name: 'ck_event_time']
+    `registration_closes_at > registration_opens_at` [name: 'ck_event_registration_window']
+  }
+  Note: 'Relation between registration close and event start remains a policy decision. Count equality to active child registrations is transactional, not guaranteed by CHECK alone. FULL/CLOSED are derived UI states.'
+}
+
+Table event_registrations {
+  id bigint [pk, increment]
+  event_id bigint [not null]
+  user_id bigint [not null]
+  status registration_state [not null, default: 'REGISTERED']
+  active_guard "tinyint GENERATED ALWAYS AS (CASE WHEN status = 'REGISTERED' THEN 1 ELSE NULL END) STORED"
+  registered_at datetime(6) [not null]
+  cancelled_at datetime(6)
+  cancellation_reason varchar(100)
+  indexes {
+    (event_id, user_id, active_guard) [unique, name: 'uq_registration_active']
+    (event_id, status, registered_at, id) [name: 'ix_registration_participants']
+    (user_id, status, registered_at, id) [name: 'ix_registration_mine']
+  }
+  checks {
+    `(status = 'REGISTERED' AND cancelled_at IS NULL) OR (status = 'CANCELLED' AND cancelled_at IS NOT NULL)` [name: 'ck_registration_cancel_state']
+  }
+  Note: 'Re-registration inserts a NEW row. Never unique(event_id,user_id) without the derived active guard.'
+}
+
+Table event_tasks {
+  id bigint [pk, increment]
+  event_id bigint [not null]
+  club_id bigint [not null, note: 'Intentional denormalization for composite FK consistency.']
+  assignee_membership_id bigint [note: 'NULL if unassigned; reassign policy on departure must be decided.']
+  created_by bigint [not null]
+  title varchar(200) [not null]
+  description text
+  status task_state [not null, default: 'TODO']
+  due_at datetime(6) [note: 'Deadline optional proposal. Overdue = due_at < now AND status != DONE.']
+  version int [not null, default: 0]
+  completed_at datetime(6)
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes {
+    (event_id, club_id) [name: 'ix_task_event_fk']
+    (assignee_membership_id, club_id) [name: 'ix_task_membership_fk']
+    (event_id, status, id) [name: 'ix_tasks_event_board']
+    (assignee_membership_id, status, due_at, id) [name: 'ix_tasks_assignee']
+  }
+  checks { `(status = 'DONE' AND completed_at IS NOT NULL) OR (status <> 'DONE' AND completed_at IS NULL)` [name: 'ck_task_completion'] }
+  Note: 'Composite FKs protect same-club association, not ACTIVE status or manager permission. Lock and validate eligibility during assignment. Assignment changes require audit.'
+}
+
+Table notifications {
+  id bigint [pk, increment]
+  user_id bigint [not null]
+  type varchar(64) [not null]
+  resource_type varchar(48)
+  resource_id bigint
+  safe_summary varchar(500) [not null, note: 'Minimal non-sensitive summary. Reauthorize destination when opened.']
+  read_at datetime(6)
+  created_at datetime(6) [not null]
+  purge_after datetime(6) [not null]
+  indexes {
+    (user_id, read_at, created_at, id) [name: 'ix_notifications_inbox']
+    (purge_after, id) [name: 'ix_notifications_cleanup']
+  }
+  Note: 'In-app inbox. For email delivery, insert outbox event in same business transaction; worker deduplicates creation/delivery by outbox ID. Reauthorize destinations when opened.'
+}
+
+// Reliable delivery: the business service inserts an outbox row in the SAME MySQL
+// transaction as the state transition. Dispatcher publishes to a durable queue;
+// worker processing is at-least-once and MUST be idempotent.
+Table outbox_events {
+  id bigint [pk, increment, note: 'Stable event ID; also use as downstream idempotency/deduplication key.']
+  event_type varchar(80) [not null, note: 'Allowlisted versioned event name, e.g. membership.approved.v1.']
+  aggregate_type varchar(48) [not null]
+  aggregate_id bigint [not null, note: 'Intentional polymorphic reference; no FK.']
+  payload json [not null, note: 'Minimal versioned payload; no tokens/secrets or unnecessary personal data.']
+  status outbox_state [not null, default: 'PENDING']
+  attempt_count int [not null, default: 0, note: 'Number of attempted queue publications, not email deliveries.']
+  next_attempt_at datetime(6) [not null, note: 'Due for initial publish or retry.']
+  claim_token binary(16) [note: 'Random claim identifier for conditional acknowledgments; prevent stale owner updates.']
+  claimed_until datetime(6) [note: 'Expired claims may be reclaimed by another dispatcher.']
+  published_at datetime(6) [note: 'Broker acknowledged publish; not proof that email was delivered.']
+  last_error_code varchar(64) [note: 'Sanitized error category, never raw provider payload.']
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  purge_after datetime(6) [note: 'Set only after terminal state and configured retention interval.']
+  indexes {
+    (status, next_attempt_at, id) [name: 'ix_outbox_due']
+    (status, claimed_until, id) [name: 'ix_outbox_reclaim']
+    (purge_after, id) [name: 'ix_outbox_cleanup']
+    (aggregate_type, aggregate_id, created_at) [name: 'ix_outbox_aggregate']
+  }
+  checks {
+    `attempt_count >= 0` [name: 'ck_outbox_attempts']
+    `(status <> 'PROCESSING') OR (claim_token IS NOT NULL AND claimed_until IS NOT NULL)` [name: 'ck_outbox_claim']
+    `(status <> 'PUBLISHED') OR published_at IS NOT NULL` [name: 'ck_outbox_published']
+  }
+  Note: 'PENDING->PROCESSING (bounded claim/lease)->PUBLISHED or PENDING (retry) or DEAD. Claim with transaction/row lock; acknowledge with claim_token. Reclaim expired PROCESSING. Publish may duplicate across crash; consumers dedupe using id. Terminal retention only. Queue durability/replay semantics must be configured and tested.'
+}
+
+Table audit_logs {
+  id bigint [pk, increment]
+  actor_user_id bigint [note: 'Nullable for system actions and controlled anonymization.']
+  club_id bigint
+  action varchar(80) [not null]
+  resource_type varchar(48) [not null]
+  resource_id bigint [not null]
+  request_id varchar(64) [not null]
+  safe_changes json [note: 'Allowlisted status/role/assignee IDs/reason code. No passwords, tokens, raw prompts or provider payloads.']
+  created_at datetime(6) [not null]
+  purge_after datetime(6) [not null]
+  indexes {
+    (club_id, created_at, id) [name: 'ix_audit_club']
+    (resource_type, resource_id, created_at, id) [name: 'ix_audit_resource']
+    (purge_after, id) [name: 'ix_audit_cleanup']
+  }
+  Note: 'Resource pointer intentionally has no polymorphic FK; audit survives resource lifecycle. Application account lacks normal UPDATE/DELETE audit permission; retention job is separate.'
+}
+
+Table ai_conversations {
+  id bigint [pk, increment]
+  owner_user_id bigint [not null]
+  title varchar(160)
+  club_context_id bigint [note: 'Optional context hint; not authorization. Recheck current membership.']
+  next_turn_no int [not null, default: 1]
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  deleted_at datetime(6)
+  purge_after datetime(6) [not null]
+  indexes {
+    (owner_user_id, deleted_at, updated_at, id) [name: 'ix_ai_conversations_mine']
+    (purge_after, id) [name: 'ix_ai_conversations_cleanup']
+  }
+}
+
+Table ai_turns {
+  id bigint [pk, increment]
+  conversation_id bigint [not null]
+  client_request_key binary(16) [not null, note: 'Deduplicates a submitted user turn within one conversation.']
+  payload_hash binary(32) [not null, note: 'Reject same key with different normalized input. Not a content log.']
+  turn_no int [not null]
+  status ai_turn_state [not null, default: 'PENDING']
+  inflight_guard "tinyint GENERATED ALWAYS AS (CASE WHEN status IN ('PENDING','RUNNING') THEN 1 ELSE NULL END) STORED"
+  lease_generation int [not null, default: 0]
+  lease_expires_at datetime(6)
+  error_code varchar(64)
+  created_at datetime(6) [not null]
+  finished_at datetime(6)
+  indexes {
+    (id, conversation_id) [unique, name: 'uq_ai_turn_id_conversation']
+    (conversation_id, client_request_key) [unique, name: 'uq_ai_turn_request']
+    (conversation_id, turn_no) [unique, name: 'uq_ai_turn_order']
+    (conversation_id, inflight_guard) [unique, name: 'uq_ai_one_inflight_turn']
+    (status, lease_expires_at, id) [name: 'ix_ai_turn_recovery']
+  }
+  Note: 'One active turn per conversation; no database lock across LLM I/O. New questions while busy receive conflict; no queue system introduced. Conditional completion uses lease_generation fencing.'
+}
+
+Table ai_messages {
+  id bigint [pk, increment]
+  conversation_id bigint [not null]
+  turn_id bigint [not null]
+  role ai_message_role [not null]
+  status ai_message_state [not null]
+  content text [note: 'NULL for pending/error answer. Length limits and encryption/storage access policy enforced outside DBML.']
+  source_refs json [note: 'Validated structured resource references needed for current reauthorization. Not raw tool result.']
+  data_retrieved_at datetime(6)
+  created_at datetime(6) [not null]
+  updated_at datetime(6) [not null]
+  indexes {
+    (turn_id, role) [unique, name: 'uq_ai_turn_message_role']
+    (conversation_id, id) [name: 'ix_ai_message_history']
+    (turn_id, conversation_id) [name: 'ix_ai_message_turn_fk']
+  }
+  Note: 'V1 stores user/final assistant text; tool messages are transient. Order history by turn_no then role. Check owner AND current referenced-resource permissions before rendering/reusing assistant content.'
+}
+
+Table ai_usage_records {
+  id bigint [pk, increment]
+  turn_id bigint [note: 'SET NULL when conversation is purged; retain only deidentified accounting if policy allows.']
+  attempt_no int [not null, note: 'One row per provider HTTP attempt, including tool-loop continuations.']
+  provider varchar(64) [not null]
+  model varchar(120) [not null]
+  provider_request_id varchar(160)
+  status usage_state [not null, default: 'PENDING']
+  usage_source usage_source [not null, default: 'UNKNOWN']
+  input_tokens bigint
+  output_tokens bigint
+  estimated_cost decimal(18,8) [note: 'NULL means unknown, never silently zero. Estimate is not an invoice.']
+  currency char(3) [not null, default: 'USD']
+  pricing_reference varchar(160)
+  duration_ms int
+  error_code varchar(64)
+  created_at datetime(6) [not null]
+  finished_at datetime(6)
+  purge_after datetime(6) [not null]
+  indexes {
+    (turn_id, attempt_no) [unique, name: 'uq_ai_usage_attempt']
+    (created_at, provider, model) [name: 'ix_ai_usage_accounting']
+    (purge_after, id) [name: 'ix_ai_usage_cleanup']
+  }
+  checks {
+    `input_tokens IS NULL OR input_tokens >= 0` [name: 'ck_ai_input_tokens']
+    `output_tokens IS NULL OR output_tokens >= 0` [name: 'ck_ai_output_tokens']
+    `estimated_cost IS NULL OR estimated_cost >= 0` [name: 'ck_ai_cost']
+  }
+}
+
+Table ai_tool_executions {
+  id bigint [pk, increment]
+  turn_id bigint [not null]
+  usage_record_id bigint [note: 'Provider attempt that requested this tool; service validates same turn.']
+  invocation_no int [not null]
+  tool_name varchar(80) [not null, note: 'Executor allowlist, never arbitrary function dispatch.']
+  status execution_state [not null, default: 'PENDING']
+  started_at datetime(6)
+  finished_at datetime(6)
+  duration_ms int
+  error_code varchar(64)
+  safe_error_metadata json [note: 'Allowlist error category/retryable flag only. No raw args/results or stack traces.']
+  indexes {
+    (turn_id, invocation_no) [unique, name: 'uq_ai_tool_invocation']
+    (usage_record_id, id) [name: 'ix_ai_tool_usage_fk']
+  }
+}
+
+Ref: refresh_token_families.user_id > users.id [delete: restrict]
+Ref: refresh_tokens.family_id > refresh_token_families.id [delete: cascade]
+Ref: refresh_tokens.replaced_by_id > refresh_tokens.id [delete: set null]
+Ref: club_creation_requests.requested_by > users.id [delete: restrict]
+Ref: club_creation_requests.reviewed_by > users.id [delete: restrict]
+Ref: clubs.source_request_id > club_creation_requests.id [delete: restrict]
+Ref: membership_applications.club_id > clubs.id [delete: restrict]
+Ref: membership_applications.user_id > users.id [delete: restrict]
+Ref: membership_applications.reviewed_by > users.id [delete: restrict]
+Ref: club_memberships.club_id > clubs.id [delete: restrict]
+Ref: club_memberships.user_id > users.id [delete: restrict]
+Ref: club_memberships.(source_application_id, club_id, user_id) > membership_applications.(id, club_id, user_id) [delete: restrict, update: restrict]
+Ref: events.club_id > clubs.id [delete: restrict]
+Ref: events.created_by > users.id [delete: restrict]
+Ref: event_registrations.event_id > events.id [delete: restrict]
+Ref: event_registrations.user_id > users.id [delete: restrict]
+Ref: event_tasks.(event_id, club_id) > events.(id, club_id) [delete: restrict]
+Ref: event_tasks.(assignee_membership_id, club_id) > club_memberships.(id, club_id) [delete: restrict]
+Ref: event_tasks.created_by > users.id [delete: restrict]
+Ref: notifications.user_id > users.id [delete: restrict]
+Ref: audit_logs.actor_user_id > users.id [delete: set null]
+Ref: audit_logs.club_id > clubs.id [delete: set null]
+Ref: ai_conversations.owner_user_id > users.id [delete: restrict]
+Ref: ai_conversations.club_context_id > clubs.id [delete: set null]
+Ref: ai_turns.conversation_id > ai_conversations.id [delete: cascade]
+Ref: ai_messages.(turn_id, conversation_id) > ai_turns.(id, conversation_id) [delete: cascade]
+Ref: ai_usage_records.turn_id > ai_turns.id [delete: set null]
+Ref: ai_tool_executions.turn_id > ai_turns.id [delete: cascade]
+Ref: ai_tool_executions.usage_record_id > ai_usage_records.id [delete: set null]
+
+TableGroup Identity {
+  users
+  refresh_token_families
+  refresh_tokens
+}
+TableGroup Clubs {
+  club_creation_requests
+  clubs
+  membership_applications
+  club_memberships
+}
+TableGroup Events {
+  events
+  event_registrations
+}
+TableGroup Tasks {
+  event_tasks
+}
+TableGroup Notifications {
+  notifications
+}
+TableGroup ReliableDelivery {
+  outbox_events
+}
+TableGroup Audit {
+  audit_logs
+}
+TableGroup AI {
+  ai_conversations
+  ai_turns
+  ai_messages
+  ai_usage_records
+  ai_tool_executions
+}
