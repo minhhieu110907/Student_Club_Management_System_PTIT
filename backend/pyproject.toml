@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scms-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Student Club Management System"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "httpx>=0.27,<1.0",
+    "pytest>=8.0,<9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
