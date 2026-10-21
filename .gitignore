@@ -22,3 +22,7 @@ Thumbs.db
 *.log
 coverage/
 htmlcov/
+
+# Temporary AI code review artifacts
+.review/
+*.patch
