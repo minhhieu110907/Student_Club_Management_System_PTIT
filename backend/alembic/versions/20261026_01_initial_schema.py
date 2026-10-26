@@ -319,7 +319,7 @@ def upgrade() -> None:
         sa.Column("ended_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.CheckConstraint("(status = 'ACTIVE' AND ended_at IS NULL) OR (status <> 'ACTIVE' AND ended_at IS NOT NULL)", name="ck_membership_end_state"),
         sa.ForeignKeyConstraint(["club_id"], ["clubs.id"], name="fk_club_memberships_club_id_clubs", ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["source_application_id", "club_id", "user_id"], ["membership_applications.id", "membership_applications.club_id", "membership_applications.user_id"], name="fk_club_memberships_source_application_id_membership_applications", ondelete="RESTRICT", onupdate="RESTRICT"),
+        sa.ForeignKeyConstraint(["source_application_id", "club_id", "user_id"], ["membership_applications.id", "membership_applications.club_id", "membership_applications.user_id"], name="fk_memberships_source_application", ondelete="RESTRICT", onupdate="RESTRICT"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_club_memberships_user_id_users", ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id", name="pk_club_memberships"),
         sa.UniqueConstraint("club_id", "user_id", "active_guard", name="uq_membership_active"),

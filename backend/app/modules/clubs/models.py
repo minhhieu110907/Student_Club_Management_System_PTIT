@@ -101,6 +101,7 @@ class ClubMembership(Base):
         ForeignKeyConstraint(
             ["source_application_id", "club_id", "user_id"],
             ["membership_applications.id", "membership_applications.club_id", "membership_applications.user_id"],
+            name="fk_memberships_source_application",
             ondelete="RESTRICT",
             onupdate="RESTRICT",
         ),

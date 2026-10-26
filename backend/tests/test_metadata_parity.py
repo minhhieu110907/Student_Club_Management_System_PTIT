@@ -337,3 +337,37 @@ def test_all_declared_dbml_and_fk_supporting_indexes_match_exactly() -> None:
     }
     assert actual_indexes == {name: (*definition, False) for name, definition in EXPECTED_INDEXES.items()}
     assert not set(EXPECTED_FK_SUPPORTING_INDEXES) - set(actual_indexes)
+
+
+def test_all_mysql_schema_identifiers_fit_the_64_character_limit() -> None:
+    identifiers = {
+        ("primary_key", table.name, table.primary_key.name)
+        for table in Base.metadata.tables.values()
+    }
+    identifiers |= {
+        (constraint.__visit_name__, table.name, constraint.name)
+        for table in Base.metadata.tables.values()
+        for constraint in table.constraints
+        if isinstance(constraint, (ForeignKeyConstraint, UniqueConstraint, CheckConstraint))
+    }
+    identifiers |= {
+        ("index", table.name, index.name)
+        for table in Base.metadata.tables.values()
+        for index in table.indexes
+    }
+
+    unnamed = {(kind, table_name) for kind, table_name, name in identifiers if name is None}
+    too_long = {
+        (kind, table_name, name, len(name))
+        for kind, table_name, name in identifiers
+        if name is not None and len(name) > 64
+    }
+    assert not unnamed
+    assert not too_long
+
+    memberships_fk = next(
+        constraint
+        for constraint in Base.metadata.tables["club_memberships"].foreign_key_constraints
+        if tuple(constraint.column_keys) == ("source_application_id", "club_id", "user_id")
+    )
+    assert memberships_fk.name == "fk_memberships_source_application"
