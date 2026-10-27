@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 
-
 app = FastAPI(title="Student Club Management System API", version="0.1.0")
 
 

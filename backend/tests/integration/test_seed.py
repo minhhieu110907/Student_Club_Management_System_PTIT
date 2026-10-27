@@ -14,10 +14,13 @@ MAIN_URL = os.getenv("SCMS_SEED_INTEGRATION_URL")
 ROLLBACK_URL = os.getenv("SCMS_SEED_ROLLBACK_URL")
 CONFLICT_URL = os.getenv("SCMS_SEED_CONFLICT_URL")
 
-pytestmark = pytest.mark.skipif(
-    not all((MAIN_URL, ROLLBACK_URL, CONFLICT_URL)),
-    reason="isolated seed integration database URLs are not configured",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not all((MAIN_URL, ROLLBACK_URL, CONFLICT_URL)),
+        reason="isolated seed integration database URLs are not configured",
+    ),
+]
 
 
 @pytest.fixture(autouse=True)
