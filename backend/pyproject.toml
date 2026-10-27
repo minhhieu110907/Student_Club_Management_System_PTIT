@@ -19,10 +19,23 @@ dependencies = [
 test = [
     "httpx>=0.27,<1.0",
     "pytest>=8.0,<9.0",
+    "ruff>=0.14,<0.15",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+    "integration: requires explicitly configured disposable infrastructure",
+    "unit: isolated unit test (ordinary tests do not need this marker)",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.setuptools.packages.find]
 where = ["."]

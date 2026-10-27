@@ -16,12 +16,23 @@
 - Next day prerequisites: Implement SQLAlchemy models and the initial Alembic migration, then verify generated MySQL schema constraints, indexes, foreign keys, and generated-column behavior against DBML V1.3.
 - Evidence links or filenames: `backend/app/main.py`, `backend/tests/test_health.py`, `backend/Dockerfile`, `backend/requirements.lock`, `compose.yaml`, `frontend/nginx.conf`, `frontend/index.html`, `.env.example`, `README.md`, and `docs/database/scms_v1_3_outbox.dbml`.
 
-### SCMS Day 02 — 2026-10-26 — STATUS: IN PROGRESS
-- Owner approval: Slice 01 and Slice 02 passed owner review and are approved for commit; no commit is recorded yet.
+### SCMS Day 02 — 2026-10-26 — STATUS: VERIFIED
+- Branch / commits: `feature/day02-database`; ORM `0bf1cbe`; Alembic `b87f6eb`; live MySQL verification `e0583c7`; deterministic seed `1352505`; merged to `main` by PR #3 (`25a7c3f`).
 - Slice 01: Database Audit completed against DBML V1.3.
 - Slice 02: SQLAlchemy 2.x Typed Declarative ORM mappings completed for all 18 tables using the shared metadata registry and modular domain-first organization.
 - Metadata parity verification: PASS — 29 foreign key constraints including 4 composite foreign keys, 17 named CHECK constraints, 20 non-primary-key unique keys, 5 STORED generated columns, and 6 approved FK-supporting indexes.
 - Python 3.12 Docker verification: PASS on Python 3.12.15 — metadata tests 7/7, health test 1/1, and full test suite 8/8.
 - Dependency status: Runtime and test dependencies were resolved and locked in a clean Python 3.12 environment; the Pytest 8.x project contract is preserved.
 - Known issue / deferred review: `ai_usage_records.estimated_cost` currently uses Python `float` typing for a MySQL `DECIMAL(18,8)` column; Python typing is deferred for later review.
-- Pending work: Physical schema verification against MySQL 8.4.4 and the initial Alembic migration remain pending. No migration or real MySQL schema change was performed in Slice 02.
+- Alembic / physical verification: Initial revision `20261026_01` was added and verified against disposable MySQL 8.4.4 resources; development MySQL and persistent volumes were not used.
+- Deterministic demo seed: Added for all 18 tables with idempotency, rollback, collision, environment-guard, relationship, and business-invariant integration coverage.
+- Deferred work: `ai_usage_records.estimated_cost` Python `float` typing remains deferred for later review. No production/shared database migration was performed.
+
+### SCMS Day 03 — 2026-10-27 — STATUS: IN PROGRESS
+- Branch / commits: `feature/day03-quality-gate`; pytest/Ruff `ce73bba`; structured logging/request correlation `5ecd7a8`; centralized exception handling `05592ee`; liveness/readiness `9a87379`; GitHub Actions Slice 05 remains uncommitted for owner review.
+- Implemented (based on code inspection): Strict pytest markers and integration fail-closed contract; transitional Ruff scope; JSON application/access logging; validated request IDs with async context isolation; standard secure API error responses; dependency-free liveness; pooled MySQL/Alembic readiness with bounded timeouts and shutdown disposal.
+- Current Slice 05 candidate: Three-job GitHub Actions workflow for quality, isolated MySQL 8.4.4 integration, and production Docker build. Readiness integration adds migrated, empty, wrong-revision, and missing-URL cases.
+- Tests run for Slice 05 candidate: Python 3.12 ordinary suite PASS (`51 passed, 13 deselected`); integration collection PASS (`13/64 collected`, comprising 9 existing and 4 readiness tests); missing-URL CI mode failed closed with expected pytest exit 4; disposable MySQL 8.4.4 integration PASS (`13 passed, 51 deselected`); `pip check` PASS; workflow YAML structural parse PASS; local production Docker build PASS.
+- Docker / environment status: Ordinary verification used `--network none`. Live integration used one uniquely named/labeled MySQL 8.4.4 container with tmpfs data and a random loopback-only host port; ownership cleanup passed with no run resources remaining. The production image built locally without push. The GitHub-hosted workflow itself has not yet run and remains NOT VERIFIED pending owner review/CI.
+- Safety decisions: CI uses synthetic credentials, a fresh MySQL service without persistent volumes, explicit migrations, seven isolated schemas, and a helper that refuses non-CI or non-loopback targets. Existing Windows verification harnesses and Compose topology are unchanged.
+- Open issue: Existing `StarletteDeprecationWarning` for the current `httpx`/`TestClient` combination remains non-blocking. Day 03 must not be marked complete until the workflow runs successfully and the owner approves it.

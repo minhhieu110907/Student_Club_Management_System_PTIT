@@ -15,10 +15,13 @@ from app.db.model_registry import Base
 
 
 DATABASE_URL = os.getenv("SCMS_MYSQL_INTEGRATION_URL")
-pytestmark = pytest.mark.skipif(
-    not DATABASE_URL,
-    reason="SCMS_MYSQL_INTEGRATION_URL is required for disposable MySQL verification",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not DATABASE_URL,
+        reason="SCMS_MYSQL_INTEGRATION_URL is required for disposable MySQL verification",
+    ),
+]
 
 
 def _normalized(value: object) -> str:
