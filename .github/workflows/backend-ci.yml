@@ -1,0 +1,127 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --requirement requirements.lock
+          python -m pip install --no-deps --no-build-isolation --editable ".[test]"
+      - name: Validate dependencies
+        run: python -m pip check
+      - name: Ruff lint
+        run: >-
+          python -m ruff check
+          app/main.py app/core app/health app/db/session.py
+          scripts/create_ci_databases.py
+          tests/conftest.py tests/test_health.py tests/test_logging.py
+          tests/test_exception_handlers.py tests/test_pytest_contract.py
+          tests/integration/test_health_readiness.py
+      - name: Ruff format check
+        run: >-
+          python -m ruff format --check
+          app/main.py app/core app/health app/db/session.py
+          scripts/create_ci_databases.py
+          tests/conftest.py tests/test_health.py tests/test_logging.py
+          tests/test_exception_handlers.py tests/test_pytest_contract.py
+          tests/integration/test_health_readiness.py
+      - name: Ordinary tests
+        run: python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest -m "not integration" -q
+
+  mysql-integration:
+    name: MySQL 8.4 integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI_MYSQL_HOST: 127.0.0.1
+      CI_MYSQL_PORT: "3306"
+      CI_MYSQL_USER: root
+      CI_MYSQL_PASSWORD: scms-ci-only-password
+    services:
+      mysql:
+        image: mysql:8.4.4
+        env:
+          MYSQL_ROOT_PASSWORD: scms-ci-only-password
+        ports:
+          - 3306:3306
+        options: >-
+          --tmpfs /var/lib/mysql:rw,nosuid,size=768m
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=scms-ci-only-password --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --requirement requirements.lock
+          python -m pip install --no-deps --no-build-isolation --editable ".[test]"
+      - name: Wait for final MySQL and create isolated schemas
+        run: python scripts/create_ci_databases.py prepare
+      - name: Apply migrations to isolated schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          for database in \
+            scms_schema_verify \
+            scms_seed_verify \
+            scms_seed_rollback \
+            scms_seed_conflict \
+            scms_readiness_ready \
+            scms_readiness_wrong
+          do
+            DATABASE_URL="mysql+pymysql://root:${CI_MYSQL_PASSWORD}@127.0.0.1:3306/${database}" \
+              python -m alembic -c alembic.ini upgrade head
+          done
+      - name: Set intentionally incorrect readiness revision
+        run: python scripts/create_ci_databases.py set-wrong-revision
+      - name: Run all fail-closed integration tests
+        env:
+          SCMS_ENV: test
+          SCMS_ALLOW_DEMO_SEED: "1"
+          SCMS_MYSQL_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_schema_verify
+          SCMS_SEED_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_seed_verify
+          SCMS_SEED_ROLLBACK_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_seed_rollback
+          SCMS_SEED_CONFLICT_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_seed_conflict
+          SCMS_READINESS_READY_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_readiness_ready
+          SCMS_READINESS_EMPTY_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_readiness_empty
+          SCMS_READINESS_WRONG_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_readiness_wrong
+        run: >-
+          python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest
+          -m integration --require-integration-env -q
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production backend image
+        run: docker build --file Dockerfile --tag scms-backend:ci .

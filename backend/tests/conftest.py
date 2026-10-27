@@ -10,11 +10,16 @@ REQUIRED_INTEGRATION_ENV = (
     "SCMS_SEED_INTEGRATION_URL",
     "SCMS_SEED_ROLLBACK_URL",
     "SCMS_SEED_CONFLICT_URL",
+    "SCMS_READINESS_READY_URL",
+    "SCMS_READINESS_EMPTY_URL",
+    "SCMS_READINESS_WRONG_URL",
 )
 REQUIRED_INTEGRATION_MODULES = {
+    "tests/integration/test_health_readiness.py",
     "tests/integration/test_mysql_schema.py",
     "tests/integration/test_seed.py",
 }
+APPROVED_INTEGRATION_TEST_COUNT = 13
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -34,6 +39,8 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError(
             "--require-integration-env must be used with exactly '-m integration'"
         )
+    if config.option.keyword.strip():
+        raise pytest.UsageError("CI integration mode forbids '-k' test filtering")
 
     missing = [name for name in REQUIRED_INTEGRATION_ENV if not os.getenv(name)]
     if missing:
@@ -71,6 +78,12 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         raise pytest.UsageError(
             "CI integration collection is incomplete; missing modules: "
             + ", ".join(sorted(missing_modules))
+        )
+    if len(integration_items) != APPROVED_INTEGRATION_TEST_COUNT:
+        raise pytest.UsageError(
+            "CI integration collection must select exactly "
+            f"{APPROVED_INTEGRATION_TEST_COUNT} approved tests; "
+            f"selected {len(integration_items)}"
         )
 
 
