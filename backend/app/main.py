@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from time import perf_counter
 
 from fastapi import FastAPI
@@ -15,6 +17,8 @@ from app.core.request_context import (
     reset_request_id,
     set_request_id,
 )
+from app.health.router import router as health_router
+from app.health.service import ReadinessService, build_readiness_service
 
 
 class RequestContextMiddleware:
@@ -75,11 +79,28 @@ def _request_id_header(scope: Scope) -> str | None:
 
 configure_logging()
 
-app = FastAPI(title="Student Club Management System API", version="0.1.0")
-app.add_middleware(RequestContextMiddleware)
-register_exception_handlers(app)
+
+def create_app(
+    readiness_service_factory: Callable[[], ReadinessService] = build_readiness_service,
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        readiness_service = readiness_service_factory()
+        application.state.readiness_service = readiness_service
+        try:
+            yield
+        finally:
+            readiness_service.dispose()
+
+    application = FastAPI(
+        title="Student Club Management System API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    application.add_middleware(RequestContextMiddleware)
+    register_exception_handlers(application)
+    application.include_router(health_router)
+    return application
 
 
-@app.get("/api/v1/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app()
