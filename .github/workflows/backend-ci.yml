@@ -38,6 +38,8 @@ jobs:
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
+          tests/test_security_password.py tests/test_security_jwt.py
+          tests/test_security_tokens.py
           tests/integration/test_health_readiness.py
       - name: Ruff format check
         run: >-
@@ -46,6 +48,8 @@ jobs:
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
+          tests/test_security_password.py tests/test_security_jwt.py
+          tests/test_security_tokens.py
           tests/integration/test_health_readiness.py
       - name: Ordinary tests
         run: python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest -m "not integration" -q
