@@ -11,9 +11,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import StreamingResponse
 
+from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import JsonFormatter, configure_logging
 from app.core.request_context import get_request_id, normalize_request_id
-from app.main import RequestContextMiddleware, app, unhandled_server_error
+from app.main import RequestContextMiddleware, app
 
 
 def test_json_formatter_emits_required_fields_and_context() -> None:
@@ -145,7 +146,7 @@ def test_concurrent_requests_keep_isolated_context() -> None:
 def test_exception_path_resets_context() -> None:
     test_app = FastAPI()
     test_app.add_middleware(RequestContextMiddleware)
-    test_app.add_exception_handler(500, unhandled_server_error)
+    register_exception_handlers(test_app)
 
     @test_app.get("/failure")
     async def failure() -> None:
@@ -160,7 +161,7 @@ def test_exception_path_resets_context() -> None:
 def test_unhandled_server_error_response_retains_request_id() -> None:
     test_app = FastAPI()
     test_app.add_middleware(RequestContextMiddleware)
-    test_app.add_exception_handler(500, unhandled_server_error)
+    register_exception_handlers(test_app)
 
     @test_app.get("/failure")
     async def failure() -> None:
@@ -177,7 +178,7 @@ def test_unhandled_server_error_response_retains_request_id() -> None:
 def test_exception_after_response_start_does_not_send_second_response() -> None:
     test_app = FastAPI()
     test_app.add_middleware(RequestContextMiddleware)
-    test_app.add_exception_handler(500, unhandled_server_error)
+    register_exception_handlers(test_app)
 
     @test_app.get("/stream-failure")
     async def stream_failure() -> StreamingResponse:

@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
-from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.request_context import (
     REQUEST_ID_HEADER,
@@ -73,18 +73,11 @@ def _request_id_header(scope: Scope) -> str | None:
     return None
 
 
-async def unhandled_server_error(request: Request, _exception: Exception) -> PlainTextResponse:
-    """Mirror Starlette's default 500 response while retaining correlation."""
-    request_id = getattr(request.state, "request_id", None)
-    headers = {REQUEST_ID_HEADER: request_id} if request_id is not None else None
-    return PlainTextResponse("Internal Server Error", status_code=500, headers=headers)
-
-
 configure_logging()
 
 app = FastAPI(title="Student Club Management System API", version="0.1.0")
 app.add_middleware(RequestContextMiddleware)
-app.add_exception_handler(500, unhandled_server_error)
+register_exception_handlers(app)
 
 
 @app.get("/api/v1/health")
