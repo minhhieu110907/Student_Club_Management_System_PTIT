@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from time import perf_counter
@@ -17,8 +18,14 @@ from app.core.request_context import (
     reset_request_id,
     set_request_id,
 )
+from app.db.session import DatabaseResources, build_database_resources
 from app.health.router import router as health_router
 from app.health.service import ReadinessService, build_readiness_service
+from app.modules.identity.auth_config import (
+    AuthenticationSettings,
+    build_authentication_settings,
+)
+from app.modules.identity.router import router as identity_router
 
 
 class RequestContextMiddleware:
@@ -82,15 +89,49 @@ configure_logging()
 
 def create_app(
     readiness_service_factory: Callable[[], ReadinessService] = build_readiness_service,
+    database_resources_factory: Callable[[], DatabaseResources | None] = build_database_resources,
+    authentication_settings_factory: Callable[
+        [], AuthenticationSettings | None
+    ] = build_authentication_settings,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         readiness_service = readiness_service_factory()
+        database_resources: DatabaseResources | None = None
+        try:
+            database_resources = database_resources_factory()
+            authentication_settings = authentication_settings_factory()
+        except BaseException:
+            try:
+                if database_resources is not None:
+                    database_resources.dispose()
+            except BaseException:
+                pass
+            try:
+                readiness_service.dispose()
+            except BaseException:
+                pass
+            raise
         application.state.readiness_service = readiness_service
+        application.state.database_resources = database_resources
+        application.state.authentication_settings = authentication_settings
         try:
             yield
         finally:
-            readiness_service.dispose()
+            original_error = sys.exception()
+            cleanup_error: BaseException | None = None
+            try:
+                if database_resources is not None:
+                    database_resources.dispose()
+            except BaseException as exc:
+                cleanup_error = exc
+            try:
+                readiness_service.dispose()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if original_error is None and cleanup_error is not None:
+                raise cleanup_error
 
     application = FastAPI(
         title="Student Club Management System API",
@@ -100,6 +141,7 @@ def create_app(
     application.add_middleware(RequestContextMiddleware)
     register_exception_handlers(application)
     application.include_router(health_router)
+    application.include_router(identity_router)
     return application
 
 

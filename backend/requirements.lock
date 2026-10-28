@@ -2,8 +2,13 @@ alembic==1.20.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
 certifi==2026.10.23
+cffi==2.1.1
 click==8.5.0
+dnspython==2.8.0
+email-validator==2.3.0
 fastapi==0.161.1
 greenlet==3.5.6
 h11==0.16.0
@@ -21,6 +26,8 @@ pydantic-core==2.50.1
 pluggy==1.7.0
 Pygments==2.21.0
 PyMySQL==1.2.3
+pycparser==3.12
+PyJWT==2.15.1
 pytest==8.4.2
 python-dotenv==1.2.4
 PyYAML==6.0.3

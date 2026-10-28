@@ -99,6 +99,17 @@ def _service(engine: FakeEngine | None) -> ReadinessService:
     return ReadinessService(cast(Any, engine))
 
 
+class DisposableResource:
+    def __init__(self, dispose_error: BaseException | None = None) -> None:
+        self.dispose_error = dispose_error
+        self.dispose_calls = 0
+
+    def dispose(self) -> None:
+        self.dispose_calls += 1
+        if self.dispose_error is not None:
+            raise self.dispose_error
+
+
 def test_health_endpoint() -> None:
     client = TestClient(app)
 
@@ -113,6 +124,41 @@ def test_liveness_succeeds_without_starting_database_lifecycle() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "alive"}
+
+
+def test_lifespan_disposes_readiness_and_database_resources() -> None:
+    readiness = DisposableResource()
+    database = DisposableResource()
+    test_app = create_app(lambda: cast(Any, readiness), lambda: cast(Any, database))
+
+    with TestClient(test_app) as client:
+        assert client.get("/api/v1/health/live").status_code == 200
+        assert readiness.dispose_calls == 0
+        assert database.dispose_calls == 0
+
+    assert database.dispose_calls == 1
+    assert readiness.dispose_calls == 1
+
+
+def test_database_startup_failure_disposes_readiness_and_preserves_original_error() -> None:
+    cleanup_error = RuntimeError("secondary cleanup failure")
+    readiness = DisposableResource(cleanup_error)
+    startup_error = ValueError("invalid configured database")
+
+    def fail_database_startup():
+        raise startup_error
+
+    test_app = create_app(
+        lambda: cast(Any, readiness),
+        cast(Any, fail_database_startup),
+    )
+
+    with pytest.raises(ValueError) as raised:
+        with TestClient(test_app):
+            pass
+
+    assert raised.value is startup_error
+    assert readiness.dispose_calls == 1
 
 
 def test_readiness_without_database_url_returns_safe_503(
