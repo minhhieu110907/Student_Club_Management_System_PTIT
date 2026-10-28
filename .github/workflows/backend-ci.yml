@@ -36,6 +36,7 @@ jobs:
           python -m ruff check
           app/main.py app/core app/health app/db/session.py
           app/modules/identity/exceptions.py app/modules/identity/repository.py
+          app/modules/identity/auth_config.py app/modules/identity/dependencies.py
           app/modules/identity/router.py app/modules/identity/schemas.py
           app/modules/identity/service.py
           scripts/create_ci_databases.py
@@ -45,6 +46,8 @@ jobs:
           tests/test_security_tokens.py
           tests/test_db_session.py tests/test_registration_schemas.py
           tests/test_registration_service.py tests/test_registration_api.py
+          tests/test_auth_config.py tests/test_login_service.py
+          tests/test_auth_dependencies.py tests/test_auth_api.py
           tests/integration/test_health_readiness.py
           tests/integration/test_registration.py
       - name: Ruff format check
@@ -52,6 +55,7 @@ jobs:
           python -m ruff format --check
           app/main.py app/core app/health app/db/session.py
           app/modules/identity/exceptions.py app/modules/identity/repository.py
+          app/modules/identity/auth_config.py app/modules/identity/dependencies.py
           app/modules/identity/router.py app/modules/identity/schemas.py
           app/modules/identity/service.py
           scripts/create_ci_databases.py
@@ -61,6 +65,8 @@ jobs:
           tests/test_security_tokens.py
           tests/test_db_session.py tests/test_registration_schemas.py
           tests/test_registration_service.py tests/test_registration_api.py
+          tests/test_auth_config.py tests/test_login_service.py
+          tests/test_auth_dependencies.py tests/test_auth_api.py
           tests/integration/test_health_readiness.py
           tests/integration/test_registration.py
       - name: Ordinary tests

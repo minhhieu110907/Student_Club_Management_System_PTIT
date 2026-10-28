@@ -21,6 +21,10 @@ from app.core.request_context import (
 from app.db.session import DatabaseResources, build_database_resources
 from app.health.router import router as health_router
 from app.health.service import ReadinessService, build_readiness_service
+from app.modules.identity.auth_config import (
+    AuthenticationSettings,
+    build_authentication_settings,
+)
 from app.modules.identity.router import router as identity_router
 
 
@@ -86,13 +90,23 @@ configure_logging()
 def create_app(
     readiness_service_factory: Callable[[], ReadinessService] = build_readiness_service,
     database_resources_factory: Callable[[], DatabaseResources | None] = build_database_resources,
+    authentication_settings_factory: Callable[
+        [], AuthenticationSettings | None
+    ] = build_authentication_settings,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         readiness_service = readiness_service_factory()
+        database_resources: DatabaseResources | None = None
         try:
             database_resources = database_resources_factory()
+            authentication_settings = authentication_settings_factory()
         except BaseException:
+            try:
+                if database_resources is not None:
+                    database_resources.dispose()
+            except BaseException:
+                pass
             try:
                 readiness_service.dispose()
             except BaseException:
@@ -100,6 +114,7 @@ def create_app(
             raise
         application.state.readiness_service = readiness_service
         application.state.database_resources = database_resources
+        application.state.authentication_settings = authentication_settings
         try:
             yield
         finally:

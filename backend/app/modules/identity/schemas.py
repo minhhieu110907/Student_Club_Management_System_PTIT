@@ -64,3 +64,30 @@ class RegisteredUserResponse(BaseModel):
     global_role: Literal["STUDENT"]
     status: Literal["ACTIVE"]
     created_at: datetime
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_length(cls, value: EmailStr) -> EmailStr:
+        normalize_email(value)
+        return value
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: Literal[600] = 600
+
+
+class CurrentUserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    global_role: Literal["STUDENT", "ADMIN"]
+    status: Literal["ACTIVE"]
