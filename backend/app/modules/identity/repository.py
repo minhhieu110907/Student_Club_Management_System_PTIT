@@ -17,6 +17,24 @@ def find_user_by_id(session: Session, user_id: int) -> User | None:
     return session.get(User, user_id)
 
 
+def find_refresh_token_by_digest(session: Session, token_hash: bytes) -> RefreshToken | None:
+    return session.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+
+
+def lock_refresh_token_family(session: Session, family_id: bytes) -> RefreshTokenFamily | None:
+    return session.scalar(
+        select(RefreshTokenFamily).where(RefreshTokenFamily.id == family_id).with_for_update()
+    )
+
+
+def lock_refresh_token(session: Session, token_id: int, token_hash: bytes) -> RefreshToken | None:
+    return session.scalar(
+        select(RefreshToken)
+        .where(RefreshToken.id == token_id, RefreshToken.token_hash == token_hash)
+        .with_for_update()
+    )
+
+
 def add_initial_session(
     session: Session,
     family: RefreshTokenFamily,
@@ -26,3 +44,15 @@ def add_initial_session(
     session.flush()
     session.add(token)
     session.flush()
+
+
+def rotate_refresh_token(
+    session: Session,
+    predecessor: RefreshToken,
+    successor: RefreshToken,
+) -> None:
+    session.flush([predecessor])
+    session.add(successor)
+    session.flush([successor])
+    predecessor.replaced_by_id = successor.id
+    session.flush([predecessor])

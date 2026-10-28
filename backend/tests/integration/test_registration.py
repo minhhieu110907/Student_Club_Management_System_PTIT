@@ -16,10 +16,15 @@ from app.db.session import DatabaseResources, create_session_factory
 from app.main import create_app
 from app.modules.identity import service as registration_service
 from app.modules.identity.auth_config import AuthenticationSettings
-from app.modules.identity.exceptions import EmailAlreadyRegisteredError
+from app.modules.identity.exceptions import EmailAlreadyRegisteredError, InvalidCredentialsError
 from app.modules.identity.models import RefreshToken, RefreshTokenFamily, User
 from app.modules.identity.schemas import LoginRequest, RegistrationRequest
-from app.modules.identity.service import login_user, register_user
+from app.modules.identity.service import (
+    login_user,
+    logout_session,
+    refresh_session,
+    register_user,
+)
 
 DATABASE_URL = os.getenv("SCMS_REGISTRATION_INTEGRATION_URL")
 pytestmark = [
@@ -282,3 +287,180 @@ def test_registration_values_satisfy_real_mysql_constraints(engine: sa.Engine) -
     assert user.created_at == user.updated_at
     assert len(user.email_normalized) <= 254
     assert len(user.password_hash) <= 255
+
+
+def test_refresh_rotation_and_reuse_revokes_family(engine: sa.Engine) -> None:
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        register_user(_request("refresh.lifecycle@example.com"), session)
+
+    resources = DatabaseResources(engine=engine, session_factory=create_session_factory(engine))
+    test_app = create_app(
+        lambda: FakeReadinessService(),
+        lambda: resources,
+        lambda: AUTH_SETTINGS,
+    )
+    with TestClient(test_app) as client:
+        login_response = client.post(
+            "/api/v1/auth/login",
+            headers={"Origin": "http://testserver"},
+            json={"email": "refresh.lifecycle@example.com", "password": "abcdefghij"},
+        )
+        predecessor_raw = login_response.cookies["scms_refresh_token"]
+        refresh_response = client.post(
+            "/api/v1/auth/refresh",
+            headers={"Origin": "http://testserver"},
+        )
+        successor_raw = refresh_response.cookies["scms_refresh_token"]
+        reuse_response = client.post(
+            "/api/v1/auth/refresh",
+            headers={
+                "Origin": "http://testserver",
+                "Cookie": f"scms_refresh_token={predecessor_raw}",
+            },
+        )
+        revoked_response = client.post(
+            "/api/v1/auth/refresh",
+            headers={
+                "Origin": "http://testserver",
+                "Cookie": f"scms_refresh_token={successor_raw}",
+            },
+        )
+
+    assert login_response.status_code == 200
+    assert refresh_response.status_code == 200
+    assert successor_raw != predecessor_raw
+    assert predecessor_raw not in refresh_response.text
+    assert reuse_response.status_code == 401
+    assert revoked_response.status_code == 401
+    with engine.connect() as connection:
+        family = connection.execute(sa.select(RefreshTokenFamily)).one()
+        tokens = connection.execute(sa.select(RefreshToken).order_by(RefreshToken.generation)).all()
+        current_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(RefreshToken)
+            .where(RefreshToken.current_guard == 1)
+        )
+
+    assert family.revoked_at is not None
+    assert family.revoke_reason == "ROTATED_TOKEN_REUSE"
+    assert family.suspicious_reuse_at is not None
+    assert len(tokens) == 2
+    assert tokens[0].generation == 0
+    assert tokens[0].rotated_at is not None
+    assert tokens[0].replaced_by_id == tokens[1].id
+    assert tokens[1].generation == 1
+    assert tokens[1].token_hash == parse_refresh_token(successor_raw).digest()
+    assert current_count == 1
+
+
+def test_successor_insert_failure_rolls_back_rotation(
+    engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        register_user(_request("refresh.rollback@example.com"), session)
+        issued = login_user(
+            LoginRequest(email="refresh.rollback@example.com", password="abcdefghij"),
+            session,
+            ACCESS_SETTINGS,
+        )
+
+    def fail_after_predecessor_flush(session, predecessor, _successor) -> None:
+        session.flush([predecessor])
+        raise RuntimeError("successor insert failed")
+
+    monkeypatch.setattr(registration_service, "rotate_refresh_token", fail_after_predecessor_flush)
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        with pytest.raises(RuntimeError, match="successor insert failed"):
+            refresh_session(issued.refresh_token.reveal(), session, ACCESS_SETTINGS)
+
+    with engine.connect() as connection:
+        tokens = connection.execute(sa.select(RefreshToken)).all()
+    assert len(tokens) == 1
+    assert tokens[0].rotated_at is None
+    assert tokens[0].replaced_by_id is None
+    assert tokens[0].current_guard == 1
+
+
+def test_concurrent_refreshes_serialize_and_trigger_strict_reuse(
+    engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        register_user(_request("refresh.concurrent@example.com"), session)
+        issued = login_user(
+            LoginRequest(email="refresh.concurrent@example.com", password="abcdefghij"),
+            session,
+            ACCESS_SETTINGS,
+        )
+
+    family_lock_barrier = threading.Barrier(2)
+    real_lock_family = registration_service.lock_refresh_token_family
+
+    def synchronized_lock_family(session: Session, family_id: bytes):
+        family_lock_barrier.wait(timeout=10)
+        return real_lock_family(session, family_id)
+
+    monkeypatch.setattr(
+        registration_service,
+        "lock_refresh_token_family",
+        synchronized_lock_family,
+    )
+
+    def attempt() -> str:
+        with Session(engine, autoflush=False, expire_on_commit=False) as session:
+            try:
+                refresh_session(issued.refresh_token.reveal(), session, ACCESS_SETTINGS)
+            except InvalidCredentialsError:
+                return "reused"
+            return "rotated"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: attempt(), range(2)))
+
+    assert sorted(results) == ["reused", "rotated"]
+    with engine.connect() as connection:
+        family = connection.execute(sa.select(RefreshTokenFamily)).one()
+        token_count = connection.scalar(sa.select(sa.func.count()).select_from(RefreshToken))
+        current_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(RefreshToken)
+            .where(RefreshToken.current_guard == 1)
+        )
+    assert family.revoke_reason == "ROTATED_TOKEN_REUSE"
+    assert token_count == 2
+    assert current_count == 1
+
+
+def test_logout_revokes_only_presented_family(engine: sa.Engine) -> None:
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        register_user(_request("logout.family@example.com"), session)
+        first = login_user(
+            LoginRequest(email="logout.family@example.com", password="abcdefghij"),
+            session,
+            ACCESS_SETTINGS,
+        )
+        second = login_user(
+            LoginRequest(email="logout.family@example.com", password="abcdefghij"),
+            session,
+            ACCESS_SETTINGS,
+        )
+
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        logout_session(first.refresh_token.reveal(), session)
+        logout_session(first.refresh_token.reveal(), session)
+
+    first_digest = first.refresh_token.digest()
+    second_digest = second.refresh_token.digest()
+    with engine.connect() as connection:
+        first_family = connection.execute(
+            sa.select(RefreshTokenFamily.revoked_at, RefreshTokenFamily.revoke_reason)
+            .join(RefreshToken, RefreshToken.family_id == RefreshTokenFamily.id)
+            .where(RefreshToken.token_hash == first_digest)
+        ).one()
+        second_family = connection.execute(
+            sa.select(RefreshTokenFamily.revoked_at, RefreshTokenFamily.revoke_reason)
+            .join(RefreshToken, RefreshToken.family_id == RefreshTokenFamily.id)
+            .where(RefreshToken.token_hash == second_digest)
+        ).one()
+    assert first_family.revoked_at is not None
+    assert first_family.revoke_reason == "LOGOUT"
+    assert second_family.revoked_at is None

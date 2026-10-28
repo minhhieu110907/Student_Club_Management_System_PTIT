@@ -48,6 +48,7 @@ jobs:
           tests/test_registration_service.py tests/test_registration_api.py
           tests/test_auth_config.py tests/test_login_service.py
           tests/test_auth_dependencies.py tests/test_auth_api.py
+          tests/test_refresh_service.py
           tests/integration/test_health_readiness.py
           tests/integration/test_registration.py
       - name: Ruff format check
@@ -67,6 +68,7 @@ jobs:
           tests/test_registration_service.py tests/test_registration_api.py
           tests/test_auth_config.py tests/test_login_service.py
           tests/test_auth_dependencies.py tests/test_auth_api.py
+          tests/test_refresh_service.py
           tests/integration/test_health_readiness.py
           tests/integration/test_registration.py
       - name: Ordinary tests

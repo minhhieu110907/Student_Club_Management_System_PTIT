@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -230,3 +231,118 @@ def test_login_logs_and_response_do_not_expose_password(
     assert secret not in response.text
     assert [record.getMessage() for record in records] == ["request.completed"]
     assert all(secret not in repr(record.__dict__) for record in records)
+
+
+def test_refresh_returns_access_token_and_replaces_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = OpaqueRefreshToken(b"r" * 32)
+    successor = OpaqueRefreshToken(b"s" * 32)
+    monkeypatch.setattr(
+        auth_router,
+        "refresh_session",
+        lambda raw, *_: IssuedSession(
+            access_token="refreshed-jwt",
+            refresh_token=successor,
+        )
+        if raw == current.reveal()
+        else pytest.fail("unexpected refresh credential"),
+    )
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/v1/auth/refresh",
+            headers={
+                "Origin": "https://scms.example",
+                "Cookie": f"scms_refresh_token={current.reveal()}",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "access_token": "refreshed-jwt",
+        "token_type": "bearer",
+        "expires_in": 600,
+    }
+    assert current.reveal() not in response.text
+    cookie = response.headers["set-cookie"]
+    assert successor.reveal() in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Secure" in cookie
+    assert "Path=/api/v1/auth" in cookie
+
+
+def test_refresh_rejects_missing_cookie_and_wrong_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_router, "refresh_session", pytest.fail)
+
+    with TestClient(_app()) as client:
+        missing = client.post(
+            "/api/v1/auth/refresh",
+            headers={"Origin": "https://scms.example"},
+        )
+        wrong_origin = client.post(
+            "/api/v1/auth/refresh",
+            headers={
+                "Origin": "https://attacker.example",
+                "Cookie": "scms_refresh_token=not-used",
+            },
+        )
+
+    assert missing.status_code == 401
+    assert missing.json()["error_code"] == "INVALID_CREDENTIALS"
+    assert wrong_origin.status_code == 403
+    assert wrong_origin.json()["error_code"] == "ORIGIN_NOT_ALLOWED"
+
+
+def test_logout_is_idempotent_and_clears_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = OpaqueRefreshToken(b"r" * 32).reveal()
+    presented: list[str | None] = []
+    monkeypatch.setattr(
+        auth_router,
+        "logout_session",
+        lambda token, _session: presented.append(token),
+    )
+
+    with TestClient(_app()) as client:
+        first = client.post(
+            "/api/v1/auth/logout",
+            headers={
+                "Origin": "https://scms.example",
+                "Cookie": f"scms_refresh_token={raw}",
+            },
+        )
+        second = client.post(
+            "/api/v1/auth/logout",
+            headers={"Origin": "https://scms.example"},
+        )
+
+    assert first.status_code == 204
+    assert second.status_code == 204
+    assert presented == [raw, None]
+    cookie = first.headers["set-cookie"]
+    assert "scms_refresh_token=" in cookie
+    assert "Max-Age=0" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Secure" in cookie
+    assert "Path=/api/v1/auth" in cookie
+
+
+def test_logout_does_not_swallow_database_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        auth_router,
+        "logout_session",
+        MagicMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    with TestClient(_app()) as client, pytest.raises(RuntimeError, match="database unavailable"):
+        client.post(
+            "/api/v1/auth/logout",
+            headers={
+                "Origin": "https://scms.example",
+                "Cookie": f"scms_refresh_token={OpaqueRefreshToken(b'r' * 32).reveal()}",
+            },
+        )

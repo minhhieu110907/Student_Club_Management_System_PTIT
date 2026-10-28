@@ -10,14 +10,23 @@ from sqlalchemy.orm import Session
 
 from app.core.security.jwt import AccessTokenSettings, create_access_token
 from app.core.security.password import PasswordValidationError, hash_password, verify_password
-from app.core.security.tokens import OpaqueRefreshToken, generate_refresh_token
+from app.core.security.tokens import (
+    OpaqueRefreshToken,
+    RefreshTokenError,
+    generate_refresh_token,
+    parse_refresh_token,
+)
 from app.modules.identity.exceptions import EmailAlreadyRegisteredError, InvalidCredentialsError
 from app.modules.identity.models import RefreshToken, RefreshTokenFamily, User
 from app.modules.identity.repository import (
     add_initial_session,
     add_user,
+    find_refresh_token_by_digest,
     find_user_by_email,
     find_user_by_id,
+    lock_refresh_token,
+    lock_refresh_token_family,
+    rotate_refresh_token,
 )
 from app.modules.identity.schemas import (
     CurrentUserResponse,
@@ -39,6 +48,13 @@ FAMILY_RETENTION = timedelta(days=30)
 class IssuedSession:
     access_token: str = field(repr=False)
     refresh_token: OpaqueRefreshToken = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _PresentedRefreshToken:
+    token_id: int
+    family_id: bytes
+    digest: bytes = field(repr=False)
 
 
 def register_user(request: RegistrationRequest, session: Session) -> RegisteredUserResponse:
@@ -144,6 +160,116 @@ def login_user(
         add_initial_session(session, family, token)
 
     return IssuedSession(access_token=access_token, refresh_token=refresh_token)
+
+
+def refresh_session(
+    encoded_refresh_token: str,
+    session: Session,
+    access_token_settings: AccessTokenSettings,
+) -> IssuedSession:
+    presented = _identify_refresh_token(encoded_refresh_token, session)
+    reused = False
+    issued: IssuedSession | None = None
+
+    if session.in_transaction():
+        raise RuntimeError("Refresh rotation requires a session without an active transaction")
+    with session.begin():
+        family = lock_refresh_token_family(session, presented.family_id)
+        token = lock_refresh_token(session, presented.token_id, presented.digest)
+        if family is None or token is None or token.family_id != family.id:
+            raise InvalidCredentialsError()
+        now = datetime.now(UTC)
+        database_time = now.replace(tzinfo=None)
+        user = find_user_by_id(session, family.user_id)
+        if (
+            user is None
+            or user.status != "ACTIVE"
+            or family.revoked_at is not None
+            or family.absolute_expires_at <= database_time
+            or token.revoked_at is not None
+            or token.expires_at <= database_time
+        ):
+            raise InvalidCredentialsError()
+
+        if token.rotated_at is not None:
+            family.revoked_at = database_time
+            family.revoke_reason = "ROTATED_TOKEN_REUSE"
+            family.suspicious_reuse_at = database_time
+            session.flush([family])
+            reused = True
+        else:
+            successor_secret = generate_refresh_token()
+            successor_expiry = min(
+                now + REFRESH_TOKEN_LIFETIME,
+                family.absolute_expires_at.replace(tzinfo=UTC),
+            )
+            successor = RefreshToken(
+                family_id=family.id,
+                token_hash=successor_secret.digest(),
+                created_at=database_time,
+                expires_at=successor_expiry.replace(tzinfo=None),
+                revoked_at=None,
+                last_used_at=None,
+                rotated_at=None,
+                replaced_by_id=None,
+                generation=token.generation + 1,
+            )
+            token.last_used_at = database_time
+            token.rotated_at = database_time
+            rotate_refresh_token(session, token, successor)
+            access_token = create_access_token(str(user.id), access_token_settings, now=now)
+            issued = IssuedSession(
+                access_token=access_token,
+                refresh_token=successor_secret,
+            )
+
+    if reused:
+        raise InvalidCredentialsError()
+    if issued is None:
+        raise RuntimeError("Refresh rotation completed without credentials")
+    return issued
+
+
+def logout_session(encoded_refresh_token: str | None, session: Session) -> None:
+    if not encoded_refresh_token:
+        return
+    try:
+        presented = _identify_refresh_token(encoded_refresh_token, session)
+    except InvalidCredentialsError:
+        return
+
+    if session.in_transaction():
+        raise RuntimeError("Logout requires a session without an active transaction")
+    with session.begin():
+        family = lock_refresh_token_family(session, presented.family_id)
+        token = lock_refresh_token(session, presented.token_id, presented.digest)
+        if family is None or token is None or token.family_id != family.id:
+            return
+        if family.revoked_at is None:
+            family.revoked_at = datetime.now(UTC).replace(tzinfo=None)
+            family.revoke_reason = "LOGOUT"
+            session.flush([family])
+
+
+def _identify_refresh_token(
+    encoded_refresh_token: str,
+    session: Session,
+) -> _PresentedRefreshToken:
+    try:
+        opaque = parse_refresh_token(encoded_refresh_token)
+    except RefreshTokenError as exc:
+        raise InvalidCredentialsError() from exc
+    token = find_refresh_token_by_digest(session, opaque.digest())
+    if token is None:
+        session.rollback()
+        raise InvalidCredentialsError()
+    presented = _PresentedRefreshToken(
+        token_id=token.id,
+        family_id=token.family_id,
+        digest=opaque.digest(),
+    )
+    session.rollback()
+    return presented
 
 
 def current_user_response(user: User) -> CurrentUserResponse:
