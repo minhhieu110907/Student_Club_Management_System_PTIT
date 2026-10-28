@@ -27,7 +27,8 @@ Refresh credentials are opaque values containing 32 CSPRNG bytes, encoded as unp
 Only their SHA-256 digest crosses the persistence boundary. SHA-256 is appropriate here because the
 input is uniformly random high-entropy material, unlike a human password.
 
-One login/device session creates one refresh-token family. A later slice will rotate on every use.
+One login/device session creates one refresh-token family. Slice 04.1 established this family model,
+and Slice 04.3 implemented rotation on every use.
 The transaction must lock the family row first and then the presented token/current-token rows in a
 stable order. It creates the successor, marks the predecessor rotated, and links the chain in one
 MySQL transaction. Any use of an already rotated token is strict replay detection and revokes the
@@ -42,9 +43,10 @@ Logout revokes the current family and clears its refresh cookie. Already issued 
 valid for at most their residual ten-minute lifetime; global denylisting is deliberately excluded
 from V1. Logout-all-sessions may revoke all live families for the user in a later slice.
 
-Cookie and CSRF mechanics are reserved for the HTTP slice. The intended baseline is a host-only,
-HttpOnly refresh cookie, `SameSite=Lax`, environment-aware `Secure`, narrow auth path, POST-only
-state changes, and strict same-origin validation. Access JWTs are not to be stored in localStorage.
+Authentication V1 uses a host-only, HttpOnly refresh cookie with `SameSite=Lax`, `Secure` in
+production, and a narrow authentication cookie path. Refresh and logout are POST-only, and
+cookie-bearing authentication endpoints validate `Origin` against an exact configured allowlist.
+As an architectural recommendation, access JWTs must not be stored in localStorage.
 
 Redis-backed rate limiting for login, registration, and refresh abuse is deferred. Redis will not
 decide credential validity, rotation, revocation, or authorization correctness.
@@ -55,5 +57,8 @@ decide credential validity, rotation, revocation, or authorization correctness.
   rotation must be controlled. Asymmetric signing is unnecessary while SCMS has one trust domain.
 - Account disablement and current authorization still require application/database checks; JWT
   claims are not a durable authorization database.
-- Rotation, replay detection, cookies, CSRF defenses, endpoints, and database mutation are design
-  commitments only and are not implemented by Slice 04.1.
+- Slice 04.1 established the Argon2id, HS256 access-JWT, and opaque refresh-token primitives.
+  Slices 04.2A, 04.2B, and 04.3 subsequently implemented registration; login; access-JWT and
+  initial refresh-token issuance; refresh rotation and replay detection; cookie handling; logout;
+  and family revocation. Redis rate limiting, access-JWT blacklisting, logout-all-sessions, cleanup
+  automation, and multi-tab refresh handling remain deferred.

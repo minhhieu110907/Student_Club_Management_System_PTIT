@@ -3,14 +3,14 @@
 > **Source of Truth — Planning baseline v1.0**  
 > Updated: 2026-10-21  
 > Project: **Student Club Management System (SCMS)**  
-> Status: **V1/21-day plan agreed; Day 1 has NOT been implemented or verified yet.**  
+> Status: **V1/21-day plan agreed; backend Authentication V1 verified locally through Day 04 on 2026-10-28; PR/hosted CI pending.**
 > Language for mentoring/reviews: Vietnamese. Code identifiers and technical artifacts: English.
 
 ## 0. HOW AN AI ASSISTANT MUST USE THIS DOCUMENT
 
 1. Read this file at the start of a **new SCMS chat**, especially when the user says `SCMS Day X/21`, `SCMS ngày X/21`, or asks for a Codex prompt. This file describes **agreed intended scope**, not proof that code exists.
 2. **Never claim a task completed without code, CI, logs, tests, or user confirmation.** The `Progress Log` near the end is the day-to-day ground truth when updated.
-3. **Do not infer exact database columns from this document.** Read the actual companion file `scms_v1_3_outbox.dbml` and, once implemented, inspect SQLAlchemy models and Alembic migrations. The DBML is a baseline pending DBML parser/MySQL validation.
+3. **Do not infer exact database columns from this document.** The DBML remains the design baseline; the implemented SQLAlchemy models and Alembic migration are the source of truth for runtime schema details and were verified against disposable MySQL 8.4.4 on Day 02.
 4. Preserve the **3-week demo/academic-project constraint**. Deliver something runnable on other people's **local Docker**, not a 24/7 commercial public production service. Be production-minded in correctness, security, tests, and portability, but do not force paid VPS, domain, Kubernetes, microservices, or complicated observability infrastructure.
 5. Prefer **reasoned trade-offs** and vertical slices over premature abstraction. Explain what the user must understand/review; write bounded, actionable Codex prompts with acceptance criteria and tests.
 6. Do not conflate this SCMS 21-day *project implementation roadmap* with the user's earlier 21-day *Backend Engineering study roadmap*.
@@ -148,7 +148,7 @@ Do not silently invent policies inside Codex implementation.
 - `event_tasks` composite FK constraints intended to enforce organizing club match; assignee *active status* is a service-level policy and must be checked under concurrency.
 - Refresh token family/rotation: hashed opaque refresh tokens; expired/revoked states, reuse detection; cleanup must not invalidate state prematurely.
 - `outbox_events` represents durable **intent to enqueue**, not confirmation email was received. Dispatcher lease/claim, retries and at-least-once publishing; worker needs idempotency/dedupe for DB effects. External email *exactly once* is NOT guaranteed.
-- Existing DBML has **NOT YET BEEN VERIFIED as a valid MySQL deployment**. At Day 2 inspect DBML, render/parser where practical, build ORM + Alembic migration, test composite FKs/generated columns/indexes/checks against fresh MySQL 8. Correct documented schema differences via decision log. Do not assert final implementation based on diagram alone.
+- Day 02 translated the DBML design baseline into SQLAlchemy ORM and Alembic, then verified composite FKs, generated columns, indexes, checks, migrations, and seed behavior against disposable MySQL 8.4.4. The diagram remains a design reference; inspect the implemented models and migration for runtime details.
 
 ### Demo data setup
 
@@ -217,6 +217,7 @@ Do not silently invent policies inside Codex implementation.
 - Cookies/storage + CSRF policy, rate limiting on auth endpoints (Redis introduced here if needed); frontend auth.
 - **Acceptance**: happy path, expiry, logout, old refresh reuse, concurrent refresh, privilege checks, logs safe.
 - **Deliverable**: authentication end to end.
+- **Implementation checkpoint (2026-10-28)**: Authentication V1 was intentionally simplified for the portfolio/local-demo scope. Backend registration, login, 10-minute access JWT, current-user dependency, HttpOnly refresh cookie, 7-day sliding refresh rotation capped by a 30-day family lifetime, strict reuse revocation, logout, Origin allowlist enforcement, and isolated MySQL concurrency/failure tests are implemented and locally verified. Frontend auth, Redis rate limiting, cleanup automation, browser multi-tab refresh handling, logout-all-sessions, and access-token denylisting remain deferred; PR/hosted CI is still pending.
 
 #### DAY 05 — Club Creation & System Admin
 - Student club-creation request; Admin approve/reject; state machine.
@@ -390,7 +391,7 @@ For solo SCMS, main + short-lived feature branches with PRs are sufficient; `dev
 
 ## 11. PROGRESS LOG — UPDATE AFTER EACH DAY
 
-**Current status at document creation:** Project V1 scope and 21-day roadmap agreed. **DAY 01 NOT STARTED / NO TASKS VERIFIED.** Prior FastAPI Project Management project and Docker/Nginx experience are *background*, not evidence of SCMS implementation.
+**Current implementation checkpoint (2026-10-28):** Days 01–03 foundations and backend Authentication V1 have local repository evidence. Day 04 remains in progress until owner PR review and hosted CI; consult `docs/progress/DAILY_PROGRESS.md` for executed commands, counts, limitations, and commit history. Prior FastAPI Project Management work remains background, not evidence of SCMS implementation.
 
 Use the template and append one block per completed or paused day:
 
@@ -413,7 +414,7 @@ Use the template and append one block per completed or paused day:
 ## 12. KEY REFERENCES AND STATUS
 
 - **Figma SCMS design** (user-owned design file): `https://www.figma.com/design/fMT21zR5lj3alq8D8RHaVK` — prior discussion identified 3 pages with desktop/mobile and UI states; verify against latest design when implementing.
-- **DBML V1.3**: `scms_v1_3_outbox.dbml` is supplied separately with this context package. The **actual DBML** takes precedence for exact fields/constraints. MySQL schema verification still pending.
+- **DBML V1.3**: `scms_v1_3_outbox.dbml` is the design baseline. Day 02 verified the implemented ORM/Alembic schema on disposable MySQL 8.4.4; for exact runtime fields and constraints, inspect the current models and migration rather than assuming the diagram alone is executable truth.
 - **Prior detailed roadmap**: embedded in Section 6; avoid requesting old chat solely to retrieve phase/day breakdown.
 - **Outbox V1.3 concept**: outbox state enum PENDING/PROCESSING/PUBLISHED/DEAD; claim/retry metadata; validate exact fields in actual file. PUBLISHED does not mean delivered.
 - **Provider decisions pending**: RQ vs Celery; current AI model/provider availability; specific email mock/provider; optional host for public preview.
