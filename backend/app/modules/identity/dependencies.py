@@ -44,7 +44,17 @@ def get_current_user(
     except AccessTokenError as exc:
         raise AuthenticationError("Invalid authentication credentials") from exc
 
+    if session.in_transaction():
+        raise RuntimeError(
+            "Authentication requires a request-scoped session without an active transaction"
+        )
+
     user = find_user_by_id(session, user_id)
     if user is None or user.status != "ACTIVE":
         raise AuthenticationError("Invalid authentication credentials")
-    return current_user_response(user)
+
+    current_user = current_user_response(user)
+    # Authentication owns only the implicit read transaction it starts here.
+    # End it before a service opens its explicit write boundary.
+    session.rollback()
+    return current_user
