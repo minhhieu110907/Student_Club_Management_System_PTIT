@@ -16,8 +16,9 @@ INTEGRATION_URLS = (
     "SCMS_READINESS_EMPTY_URL",
     "SCMS_READINESS_WRONG_URL",
     "SCMS_REGISTRATION_INTEGRATION_URL",
+    "SCMS_CLUB_INTEGRATION_URL",
 )
-APPROVED_INTEGRATION_TEST_COUNT = 26
+APPROVED_INTEGRATION_TEST_COUNT = 32
 
 
 def _integration_environment(*, include_urls: bool) -> dict[str, str]:
@@ -111,7 +112,7 @@ def test_ci_integration_mode_rejects_incomplete_test_selection() -> None:
 
     assert result.returncode != 0
     assert (
-        "CI integration collection must select exactly 26 approved tests; selected 25"
+        "CI integration collection must select exactly 32 approved tests; selected 31"
         in result.stdout + result.stderr
     )
 

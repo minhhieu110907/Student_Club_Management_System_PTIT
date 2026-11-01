@@ -14,14 +14,16 @@ REQUIRED_INTEGRATION_ENV = (
     "SCMS_READINESS_EMPTY_URL",
     "SCMS_READINESS_WRONG_URL",
     "SCMS_REGISTRATION_INTEGRATION_URL",
+    "SCMS_CLUB_INTEGRATION_URL",
 )
 REQUIRED_INTEGRATION_MODULES = {
     "tests/integration/test_health_readiness.py",
     "tests/integration/test_mysql_schema.py",
     "tests/integration/test_seed.py",
     "tests/integration/test_registration.py",
+    "tests/integration/test_club_requests.py",
 }
-APPROVED_INTEGRATION_TEST_COUNT = 26
+APPROVED_INTEGRATION_TEST_COUNT = 32
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

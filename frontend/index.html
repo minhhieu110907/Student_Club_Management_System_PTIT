@@ -1,24 +1,194 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Student Club Management System</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SCMS Club Requests</title>
+    <link rel="stylesheet" href="css/styles.css" />
     <script src="js/app.js" defer></script>
   </head>
   <body>
+    <header class="topbar">
+      <div class="topbar-identity">
+        <strong class="brand">SCMS</strong>
+        <span class="topbar-context">Club creation</span>
+      </div>
+      <div id="session-summary">Checking session…</div>
+    </header>
+
     <main class="shell">
-      <p class="eyebrow">SCMS infrastructure smoke test</p>
-      <h1>Student Club Management System</h1>
-      <p class="summary">
-        The frontend is served by Nginx and the API is provided by FastAPI.
-      </p>
-      <section class="status-card" aria-live="polite">
-        <span class="status-dot" id="status-dot"></span>
-        <div>
-          <h2>API status</h2>
-          <p id="api-status">Checking the backend health endpoint…</p>
+      <section id="login-view" class="auth-view hidden">
+        <p class="eyebrow">Student Club Management System</p>
+        <h1>Sign in</h1>
+        <p class="lead">Return to your club workspace.</p>
+
+        <form id="login-form" class="stack auth-form">
+          <label>
+            Email
+            <input
+              name="email"
+              type="email"
+              autocomplete="username"
+              placeholder="student@example.edu.vn"
+              required
+            />
+          </label>
+          <label>
+            Password
+            <span class="password-field">
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+              <button
+                id="password-toggle"
+                class="password-toggle"
+                type="button"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <svg
+                  class="password-icon"
+                  data-password-icon="eye"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                  <circle cx="12" cy="12" r="2.75" />
+                </svg>
+                <svg
+                  class="password-icon hidden"
+                  data-password-icon="eye-off"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m3 3 18 18M10.6 6.1A10.8 10.8 0 0 1 12 6c6 0 9.5 6 9.5 6a15.7 15.7 0 0 1-2.1 2.8M6.2 6.2C3.8 7.8 2.5 12 2.5 12s3.5 6 9.5 6c1.5 0 2.8-.4 4-1M9.9 9.9a3 3 0 0 0 4.2 4.2"
+                  />
+                </svg>
+              </button>
+            </span>
+          </label>
+          <button class="primary-action">Sign in</button>
+        </form>
+        <p id="login-message" class="message" aria-live="polite"></p>
+      </section>
+
+      <section id="student-view" class="hidden">
+        <div class="app-frame">
+          <aside class="sidebar" aria-label="Student workspace">
+            <p class="sidebar-label">Workspace</p>
+            <h2>Personal</h2>
+            <p>Role: Student</p>
+            <div class="sidebar-active">Club requests</div>
+            <span>Proposal and status</span>
+          </aside>
+
+          <div class="workspace-content">
+            <div class="hero">
+              <div>
+                <p class="eyebrow">Personal workspace</p>
+                <h1>Club creation requests</h1>
+                <p class="lead">Submit a proposal and follow its approval status.</p>
+              </div>
+              <button id="logout-student" class="secondary">Sign out</button>
+            </div>
+
+            <div class="student-grid">
+              <section class="panel proposal-panel">
+                <div class="section-heading">
+                  <h2>Propose a club</h2>
+                  <p>The club is created only after System Admin approval.</p>
+                </div>
+                <form id="club-request-form" class="stack">
+                  <label
+                    >Club name<input
+                      name="proposed_name"
+                      maxlength="160"
+                      placeholder="Enter the proposed name"
+                      required
+                  /></label>
+                  <label
+                    >Category<input
+                      name="category"
+                      maxlength="80"
+                      placeholder="Select a category"
+                      required
+                  /></label>
+                  <label
+                    >Mission<textarea
+                      name="mission"
+                      rows="4"
+                      placeholder="Describe the community and its purpose"
+                      required
+                    ></textarea>
+                  </label>
+                  <label
+                    >Initial plan<textarea
+                      name="initial_plan"
+                      rows="4"
+                      placeholder="Outline the first activities and operating plan"
+                      required
+                    ></textarea>
+                  </label>
+                  <button class="primary-action">Submit request</button>
+                </form>
+                <p class="form-note">On approval, the founder becomes the club's first Manager.</p>
+                <p id="student-message" class="message" aria-live="polite"></p>
+              </section>
+
+              <div class="stack status-column">
+                <section class="panel">
+                  <div class="section-heading">
+                    <h2>My requests</h2>
+                    <p>Track submitted club proposals.</p>
+                  </div>
+                  <div id="request-list" class="cards loading">Loading requests…</div>
+                </section>
+                <section class="panel">
+                  <div class="section-heading">
+                    <h2>My clubs</h2>
+                    <p>Approved clubs appear here.</p>
+                  </div>
+                  <div id="club-list" class="cards loading">Loading clubs…</div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="admin-view" class="hidden">
+        <div class="app-frame">
+          <aside class="sidebar" aria-label="System administration">
+            <p class="sidebar-label">Workspace</p>
+            <h2>System</h2>
+            <p>Role: Admin</p>
+            <div class="sidebar-active">Club approvals</div>
+            <span>Pending requests only</span>
+          </aside>
+
+          <div class="workspace-content">
+            <div class="hero">
+              <div>
+                <p class="eyebrow">System administration</p>
+                <h1>Review club requests</h1>
+                <p class="lead">Only pending proposals can be approved or rejected.</p>
+              </div>
+              <button id="logout-admin" class="secondary">Sign out</button>
+            </div>
+            <section class="panel admin-panel">
+              <div class="section-heading">
+                <h2>Pending review</h2>
+                <p>Review the mission and initial plan before deciding.</p>
+              </div>
+              <div id="admin-list" class="cards loading">Loading requests…</div>
+            </section>
+            <p id="admin-message" class="message" aria-live="polite"></p>
+          </div>
         </div>
       </section>
     </main>

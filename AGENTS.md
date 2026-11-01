@@ -131,3 +131,22 @@ Document:
 - Next steps
 
 Do not mark an entire day DONE without user approval.
+
+## 11. UI/UX Design Source of Truth
+
+- Before implementing or changing UI, inspect `UI_UX/SCMS_Desktop.pdf`, `UI_UX/SCMS_Foundation.pdf`, and `UI_UX/SCMS_Mobile_and_State.pdf`, and record the relevant pages/frames. Use Desktop for matching desktop screens, Mobile and State for responsive layouts and interaction states, and Foundation for documented tokens, typography, and shared styling. Do not invent specifications absent from these references or claim Figma/PDF fidelity without checking the corresponding pages.
+- Use HTML, CSS, and vanilla JavaScript. Reuse existing components, classes, assets, and conventions. Do not introduce React, another frontend framework, or a replacement design system without owner approval.
+- Deliver every user-facing module as one Backend + Frontend + real-API vertical slice; do not defer frontend implementation or integration. Use actual API responses and existing authentication, and include appropriate loading, success, error, and empty states. UI completion also requires correct authorization and data behavior.
+- Respect both desktop and mobile references. Use semantic HTML, accessible labels, keyboard-operable controls, safe DOM rendering for untrusted content, and layouts without unnecessary horizontal overflow.
+- Where a matching design exists, Figma/PDF controls visual presentation; the actual ORM/schema and backend API contracts control technical behavior. Do not automatically implement out-of-scope backend features shown by a design. Document PDF/business conflicts instead of inventing behavior.
+- Verify relevant screens at desktop and mobile widths, exercise UI actions against real endpoints where possible, record the PDF pages used, and report known visual deviations. Do not claim browser E2E PASS when browser interaction was not completed.
+
+## 12. Code Style, Readability & Formatting
+
+- Readability and maintainability take priority over minimizing line count. Use 2-space indentation for JavaScript, HTML, and CSS, and 4-space indentation for Python in accordance with Ruff.
+- Never compress an entire function into one line or place multiple independent statements on the same line. Use explicit multi-line blocks for conditionals, loops, functions, async functions, and `try`/`catch`/`finally`, and separate meaningful logical steps with blank lines.
+- Prefer descriptive names, clear guard clauses and early returns, limited nesting, and reasonably sized functions. Keep authentication, refresh-token coordination, authorization, API error handling, and other asynchronous flows especially easy to inspect.
+- Prefer readable multi-line HTML and template markup over dense one-line strings while preserving safe escaping of untrusted values. Comments should explain decisions, invariants, and non-obvious behavior rather than restating the code.
+- Never trade security, performance, or correctness for shorter syntax. Do not introduce unnecessary abstractions or large-scale refactors solely for formatting.
+- Use existing formatter configuration when present. Use Prettier for HTML, CSS, and JavaScript when available, with a preferred print width of 100 and 2-space indentation; use Ruff for Python. If Prettier configuration is absent, propose a minimal `.prettierrc.json` and `.prettierignore` without adding unnecessary frontend runtime dependencies.
+- Treat formatting as a standard verification gate before owner review. Check consistent formatting, remove dense one-line functions and excessive nesting, run relevant syntax, lint, formatting, and behavioral tests, keep the change scoped, and distinguish formatting-only changes from behavioral changes in the handoff.

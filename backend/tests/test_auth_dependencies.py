@@ -5,8 +5,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from app.core.exceptions import AuthenticationError
 from app.core.security.jwt import AccessTokenClaims, AccessTokenError, AccessTokenSettings
+from app.modules.identity import dependencies
 from app.modules.identity.auth_config import AuthenticationSettings
-from app.modules.identity.dependencies import get_current_user
 from app.modules.identity.models import User
 
 SETTINGS = AuthenticationSettings(
@@ -17,6 +17,18 @@ SETTINGS = AuthenticationSettings(
     cookie_secure=True,
 )
 CREDENTIALS = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+
+
+class SessionStub:
+    def __init__(self, transaction_active: bool = False) -> None:
+        self.rollback_calls = 0
+        self.transaction_active = transaction_active
+
+    def in_transaction(self) -> bool:
+        return self.transaction_active
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
 
 
 def _claims(subject: str) -> AccessTokenClaims:
@@ -48,7 +60,7 @@ def test_invalid_jwt_subject_is_rejected(subject: str, monkeypatch: pytest.Monke
     )
 
     with pytest.raises(AuthenticationError):
-        get_current_user(CREDENTIALS, object(), SETTINGS)
+        dependencies.get_current_user(CREDENTIALS, object(), SETTINGS)
 
 
 def test_active_current_user_returns_safe_dto(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,10 +69,35 @@ def test_active_current_user_returns_safe_dto(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr("app.modules.identity.dependencies.find_user_by_id", lambda *_: _user())
 
-    current = get_current_user(CREDENTIALS, object(), SETTINGS)
+    session = SessionStub()
+    current = dependencies.get_current_user(CREDENTIALS, session, SETTINGS)
 
     assert current.id == 7
     assert "password" not in current.model_dump()
+    assert session.rollback_calls == 1
+
+
+def test_authentication_refuses_to_rollback_pre_existing_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.modules.identity.dependencies.decode_access_token", lambda *_: _claims("7")
+    )
+    lookup_calls = 0
+
+    def find_user(*_: object) -> User:
+        nonlocal lookup_calls
+        lookup_calls += 1
+        return _user()
+
+    monkeypatch.setattr("app.modules.identity.dependencies.find_user_by_id", find_user)
+    session = SessionStub(transaction_active=True)
+
+    with pytest.raises(RuntimeError, match="without an active transaction"):
+        dependencies.get_current_user(CREDENTIALS, session, SETTINGS)
+
+    assert lookup_calls == 0
+    assert session.rollback_calls == 0
 
 
 @pytest.mark.parametrize("user", [None, _user("DISABLED")])
@@ -73,7 +110,7 @@ def test_missing_or_disabled_current_user_is_rejected(
     monkeypatch.setattr("app.modules.identity.dependencies.find_user_by_id", lambda *_: user)
 
     with pytest.raises(AuthenticationError):
-        get_current_user(CREDENTIALS, object(), SETTINGS)
+        dependencies.get_current_user(CREDENTIALS, SessionStub(), SETTINGS)
 
 
 def test_jwt_validation_error_is_mapped_to_authentication_error(
@@ -85,4 +122,4 @@ def test_jwt_validation_error_is_mapped_to_authentication_error(
     )
 
     with pytest.raises(AuthenticationError):
-        get_current_user(CREDENTIALS, object(), SETTINGS)
+        dependencies.get_current_user(CREDENTIALS, object(), SETTINGS)
