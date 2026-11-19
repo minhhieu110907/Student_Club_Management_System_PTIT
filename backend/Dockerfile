@@ -5,9 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml alembic.ini ./
 COPY requirements.lock ./
 COPY app ./app
+COPY alembic ./alembic
+COPY scripts ./scripts
 
 RUN pip install --no-cache-dir --requirement requirements.lock \
     && pip install --no-cache-dir --no-deps --no-build-isolation . \

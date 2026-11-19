@@ -16,18 +16,49 @@ services:
     networks:
       - edge
 
+  bootstrap:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "scripts.bootstrap_demo"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      SCMS_ENV: ${SCMS_ENV:-demo}
+      SCMS_ALLOW_DEMO_SEED: ${SCMS_ALLOW_DEMO_SEED:-0}
+      SCMS_DEMO_PASSWORD: ${SCMS_DEMO_PASSWORD:-}
+      SCMS_DEMO_PASSWORD_HASH: ${SCMS_DEMO_PASSWORD_HASH:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - data
+
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
     expose:
       - "8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      SCMS_ENV: ${SCMS_ENV:-demo}
+      SCMS_JWT_SECRET: ${SCMS_JWT_SECRET:?Set SCMS_JWT_SECRET in .env}
+      SCMS_JWT_ISSUER: ${SCMS_JWT_ISSUER:-scms-local}
+      SCMS_JWT_AUDIENCE: ${SCMS_JWT_AUDIENCE:-scms-api}
+      SCMS_AUTH_ALLOWED_ORIGINS: ${SCMS_AUTH_ALLOWED_ORIGINS:-http://localhost:8080}
+      SCMS_COOKIE_SECURE: ${SCMS_COOKIE_SECURE:-false}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=2)
       interval: 5s
       timeout: 3s
       retries: 10
