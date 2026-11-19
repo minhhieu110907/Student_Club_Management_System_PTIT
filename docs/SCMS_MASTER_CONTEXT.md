@@ -1,9 +1,9 @@
 # SCMS — MASTER PROJECT CONTEXT & 21-DAY EXECUTION PLAN
 
-> **Source of Truth — Planning baseline v1.0**  
-> Updated: 2026-10-21  
+> **Source of Truth — Planning baseline v1.1 (Updated for MVP Acceleration)**  
+> Updated: 2026-11-19  
 > Project: **Student Club Management System (SCMS)**  
-> Status: **V1/21-day plan agreed; backend Authentication V1 verified locally through Day 04 on 2026-10-28; PR/hosted CI pending.**
+> Status: **PR #7 (Day 06 Membership Lifecycle, `ac3cc4d`) merged to `main`; chiến lược phát triển chuyển sang MVP-First + RetailOps Reuse + Production-Grade Correctness.**
 > Language for mentoring/reviews: Vietnamese. Code identifiers and technical artifacts: English.
 
 ## 0. HOW AN AI ASSISTANT MUST USE THIS DOCUMENT
@@ -27,6 +27,36 @@
 - **V1 end goal**: Another person can `git clone`, configure `.env`, run `docker compose up -d --build`, wait for a **single, safe migration + demo seed bootstrap**, open a localhost URL, log into demo roles, use the UI/AI/demo functions. They do **not** need system Python, local MySQL/Redis/Nginx or a VPS.
 - **AI key may be unavailable**: offer a documented **mock AI mode** for reproducible demo. Real LLM usage needs valid key/quota; never commit keys.
 - **Philosophy**: **Small Scope — Deep Engineering — Production-minded**. High quality of core invariants matters more than feature count/UI polish.
+
+## 1A. CHIẾN LƯỢC PHÁT TRIỂN ĐƯỢC PHÊ DUYỆT — SCMS V1 — MVP-First + RetailOps Reuse + Production-Grade Correctness
+
+Từ mốc sau PR #7 (`ac3cc4d`), Product Owner và Technical Reviewer đã phê duyệt chiến lược tăng tốc hoàn thiện SCMS V1 theo hướng **MVP-First + RetailOps Reuse + Production-Grade Correctness**, thay thế thứ tự thực thi 21 ngày dàn trải trước đây.
+
+### Ưu tiên thực thi
+1. Hoàn thiện business APIs và frontend (HTML/CSS/Vanilla JS tích hợp API thật).
+2. Tái sử dụng code và pattern đã được kiểm chứng từ **RetailOps V1** (như `Page[T]`, `ToolBudget`/`ToolContext`, strict DTOs — điều chỉnh authorization sang mô hình club-scoped/user-scoped của SCMS).
+3. **Events & Registration** (CRUD sự kiện, đăng ký/hủy đăng ký, bảo vệ capacity dưới concurrent requests).
+4. **Tasks** (giao việc cho active member của club tổ chức, cập nhật và theo dõi tiến độ).
+5. **Gemini AI read-only tool calling** (4 read-only tools, thực thi qua business services, kèm mock mode).
+6. **Demo & Stabilization** (deterministic demo seed, kiểm thử hồi quy, Docker portability).
+
+### Hoãn khỏi MVP nếu không có dependency thực tế
+- Redis caching (Cache-Aside).
+- Worker queue (RQ/Celery).
+- Transactional outbox dispatcher.
+- Hạ tầng AI phức tạp (RAG, vector database, multi-agent, turn leases/fencing).
+- Các abstraction và hệ thống phân tán không cần thiết.
+
+### Bắt buộc giữ (Production-Grade Correctness)
+- Security và authorization (club-scoped RBAC, chống IDOR/BOLA).
+- Transaction integrity (service layer làm chủ transaction boundaries).
+- Concurrency và race-condition protection (khóa dòng / conditional updates / unique constraints).
+- Database constraints (MySQL 8.4.4 là nguồn chân lý duy nhất).
+- N+1 query prevention (`selectinload`, `joinedload` hoặc projection/JOIN).
+- Pagination và query efficiency (bounded pagination cho các list endpoints).
+- CI và kiểm thử nghiệp vụ rủi ro cao (real MySQL integration tests cho concurrency & auth).
+
+> **Lưu ý lịch sử:** Các ADR cũ (như `docs/decisions/0001-authentication-security-foundation.md`) và tiến độ Day 01–06 được giữ nguyên vẹn làm hồ sơ lịch sử, không viết lại.
 
 ## 2. TECHNOLOGY & ARCHITECTURE (AGREED)
 
@@ -184,7 +214,9 @@ Do not silently invent policies inside Codex implementation.
 - Measure performance, optimize only backed by evidence.
 - No Docker image/README/CI claim counts as passing without run output.
 
-## 6. DAILY EXECUTION ROADMAP (21 DAYS)
+## 6. DAILY EXECUTION ROADMAP (21 DAYS — LỊCH SỬ THAM KHẢO)
+
+> **Trạng thái tài liệu:** Roadmap 21 ngày dưới đây được giữ lại như **lịch sử lập kế hoạch ban đầu** và **đã được thay thế bởi chiến lược `SCMS V1 — MVP-First + RetailOps Reuse + Production-Grade Correctness` tại Mục 1A**. Không dùng lịch trình Day 13–21 cũ để ép triển khai Redis cache/worker/outbox khi chưa có nhu cầu MVP thực tế.
 
 **Interpretation:** The deliverables below are *target* scope per day. Depth and sequencing can be adjusted based on actual code/test evidence, without silently deleting agreed V1 requirements.
 
@@ -391,7 +423,7 @@ For solo SCMS, main + short-lived feature branches with PRs are sufficient; `dev
 
 ## 11. PROGRESS LOG — UPDATE AFTER EACH DAY
 
-**Current implementation checkpoint (2026-10-28):** Days 01–03 foundations and backend Authentication V1 have local repository evidence. Day 04 remains in progress until owner PR review and hosted CI; consult `docs/progress/DAILY_PROGRESS.md` for executed commands, counts, limitations, and commit history. Prior FastAPI Project Management work remains background, not evidence of SCMS implementation.
+**Current implementation checkpoint (2026-11-19):** Days 01–06 (Foundation, DB Schema/Seed, Quality Gate, Authentication, Club Creation, Membership Lifecycle) are merged into `main` through PR #7 (`ac3cc4d`); consult `docs/progress/DAILY_PROGRESS.md` for executed commands, counts, limitations, and commit history. Prior FastAPI Project Management work remains background, not evidence of SCMS implementation.
 
 Use the template and append one block per completed or paused day:
 
