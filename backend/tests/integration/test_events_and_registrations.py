@@ -262,6 +262,11 @@ def test_event_lifecycle_authorization_visibility_and_deadlines(engine: sa.Engin
     with Session(engine, autoflush=False, expire_on_commit=False) as session:
         reg = service.register_for_event(draft_id, _actor(4), session)
         assert reg.status == "REGISTERED"
+        listed = service.list_events(_actor(4), session, page=1, page_size=1)
+        assert listed.items[0].id == draft_id
+        assert listed.items[0].is_registered is True
+        detail = service.get_event_detail(draft_id, _actor(4), session)
+        assert detail.is_registered is True
     _assert_count_reconciles(engine, draft_id)
 
     # Cannot reduce capacity below active registrations (1) -> wait capacity=2, try 0 is Pydantic,

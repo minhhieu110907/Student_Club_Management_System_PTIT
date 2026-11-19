@@ -90,7 +90,7 @@ def _duplicate_constraint(exc: IntegrityError) -> str | None:
     return match.group(1).rsplit(".", maxsplit=1)[-1]
 
 
-def _event_response(event: Event, club_name: str) -> EventResponse:
+def _event_response(event: Event, club_name: str, *, is_registered: bool = False) -> EventResponse:
     return EventResponse(
         id=event.id,
         club_id=event.club_id,
@@ -108,6 +108,7 @@ def _event_response(event: Event, club_name: str) -> EventResponse:
         cancellation_deadline_at=_as_utc(event.cancellation_deadline_at),
         capacity=event.capacity,
         registration_count=event.registration_count,
+        is_registered=is_registered,
         version=event.version,
         published_at=_as_utc(event.published_at),
         cancelled_at=_as_utc(event.cancelled_at),
@@ -200,7 +201,10 @@ def list_events(
         page_size=page_size,
     )
     return EventListResponse(
-        items=[_event_response(event, club_name) for event, club_name in rows],
+        items=[
+            _event_response(event, club_name, is_registered=is_registered)
+            for event, club_name, is_registered in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -222,7 +226,10 @@ def list_managed_club_events(
         session, club_id=club_id, status=status, page=page, page_size=page_size
     )
     return EventListResponse(
-        items=[_event_response(event, club_name) for event, club_name in rows],
+        items=[
+            _event_response(event, club_name, is_registered=is_registered)
+            for event, club_name, is_registered in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -234,10 +241,10 @@ def get_event_detail(
     user: CurrentUserResponse,
     session: Session,
 ) -> EventResponse:
-    found = find_event_with_club(session, event_id)
+    found = find_event_with_club(session, event_id, user_id=user.id)
     if found is None:
         raise EventNotFoundError()
-    event, club_name = found
+    event, club_name, is_registered = found
 
     if event.status != "PUBLISHED":
         if user.global_role == "STUDENT":
@@ -248,7 +255,7 @@ def get_event_detail(
         if find_active_membership(session, event.club_id, user.id) is None:
             raise EventMembersOnlyError()
 
-    return _event_response(event, club_name)
+    return _event_response(event, club_name, is_registered=is_registered)
 
 
 def update_event(
@@ -535,7 +542,7 @@ def get_event_participants(
     found = find_event_with_club(session, event_id)
     if found is None:
         raise EventNotFoundError()
-    event, _club_name = found
+    event, _club_name, _is_registered = found
     require_active_manager(session, event.club_id, user.id, for_update=False)
 
     rows, total = list_event_participants(

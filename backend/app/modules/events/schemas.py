@@ -126,6 +126,7 @@ class EventResponse(BaseModel):
     cancellation_deadline_at: datetime | None
     capacity: int
     registration_count: int
+    is_registered: bool = False
     version: int
     published_at: datetime | None
     cancelled_at: datetime | None

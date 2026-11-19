@@ -202,6 +202,7 @@
                   <p>Register for public events or events of clubs you belong to.</p>
                 </div>
                 <div id="events-list" class="cards discovery-grid loading">Loading events…</div>
+                <div id="events-pagination" class="pagination-bar"></div>
                 <div id="event-detail-panel" class="event-detail-panel hidden"></div>
                 <p id="events-message" class="message" aria-live="polite"></p>
               </section>
@@ -214,6 +215,7 @@
                 <div id="my-registrations-list" class="cards loading">
                   Loading registrations…
                 </div>
+                <div id="my-registrations-pagination" class="pagination-bar"></div>
               </section>
 
               <section id="manager-events-panel" class="panel full-width-panel hidden">
@@ -274,10 +276,17 @@
                       required
                     ></textarea>
                   </label>
-                  <button class="primary-action">Create draft event</button>
+                  <div class="actions full-span">
+                    <button id="event-submit-btn" class="primary-action">Create draft event</button>
+                    <button id="event-edit-cancel" type="button" class="secondary hidden">
+                      Cancel edit
+                    </button>
+                  </div>
                 </form>
                 <div id="manager-events-list" class="cards loading">Loading club events…</div>
+                <div id="manager-events-pagination" class="pagination-bar"></div>
                 <div id="manager-participants-list" class="cards hidden"></div>
+                <div id="manager-participants-pagination" class="pagination-bar hidden"></div>
                 <p id="manager-events-message" class="message" aria-live="polite"></p>
               </section>
             </div>

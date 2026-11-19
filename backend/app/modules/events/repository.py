@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.clubs.models import Club, ClubMembership
@@ -29,13 +29,26 @@ def add_event(session: Session, event: Event) -> None:
     session.flush([event])
 
 
-def find_event_with_club(session: Session, event_id: int) -> tuple[Event, str] | None:
+def find_event_with_club(
+    session: Session, event_id: int, *, user_id: int | None = None
+) -> tuple[Event, str, bool] | None:
+    is_registered_expr = (
+        exists().where(
+            EventRegistration.event_id == Event.id,
+            EventRegistration.user_id == user_id,
+            EventRegistration.status == "REGISTERED",
+        )
+        if user_id is not None
+        else select(False).scalar_subquery()
+    )
     row = session.execute(
-        select(Event, Club.name).join(Club, Club.id == Event.club_id).where(Event.id == event_id)
+        select(Event, Club.name, is_registered_expr)
+        .join(Club, Club.id == Event.club_id)
+        .where(Event.id == event_id)
     ).first()
     if row is None:
         return None
-    return row[0], row[1]
+    return row[0], row[1], bool(row[2])
 
 
 def lock_event(session: Session, event_id: int) -> Event | None:
@@ -57,7 +70,7 @@ def list_discoverable_events(
     now: datetime,
     page: int,
     page_size: int,
-) -> tuple[list[tuple[Event, str]], int]:
+) -> tuple[list[tuple[Event, str, bool]], int]:
     active_club_ids = select(ClubMembership.club_id).where(
         ClubMembership.user_id == user_id,
         ClubMembership.status == "ACTIVE",
@@ -80,15 +93,20 @@ def list_discoverable_events(
     total = session.scalar(
         select(func.count()).select_from(Event).join(Club, Club.id == Event.club_id).where(*filters)
     )
+    is_registered_expr = exists().where(
+        EventRegistration.event_id == Event.id,
+        EventRegistration.user_id == user_id,
+        EventRegistration.status == "REGISTERED",
+    )
     rows = session.execute(
-        select(Event, Club.name)
+        select(Event, Club.name, is_registered_expr)
         .join(Club, Club.id == Event.club_id)
         .where(*filters)
         .order_by(Event.starts_at.asc(), Event.id.asc())
         .limit(page_size)
         .offset((page - 1) * page_size)
     ).all()
-    return [(row[0], row[1]) for row in rows], int(total or 0)
+    return [(row[0], row[1], bool(row[2])) for row in rows], int(total or 0)
 
 
 def list_club_events(
