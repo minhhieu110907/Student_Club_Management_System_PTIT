@@ -22,8 +22,9 @@ REQUIRED_INTEGRATION_MODULES = {
     "tests/integration/test_seed.py",
     "tests/integration/test_registration.py",
     "tests/integration/test_club_requests.py",
+    "tests/integration/test_membership_lifecycle.py",
 }
-APPROVED_INTEGRATION_TEST_COUNT = 32
+APPROVED_INTEGRATION_TEST_COUNT = 46
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

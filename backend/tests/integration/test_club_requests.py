@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.modules.clubs import service as club_service
 from app.modules.clubs.exceptions import ClubRequestNotFoundError
-from app.modules.clubs.models import Club, ClubCreationRequest, ClubMembership
+from app.modules.clubs.models import (
+    Club,
+    ClubCreationRequest,
+    ClubMembership,
+    MembershipApplication,
+)
 from app.modules.clubs.schemas import ClubRequestCreate
 from app.modules.identity.models import User
 from app.modules.identity.schemas import CurrentUserResponse
@@ -29,6 +34,7 @@ def engine() -> sa.Engine:
     database_engine = sa.create_engine(DATABASE_URL, pool_pre_ping=True)
     with database_engine.begin() as connection:
         connection.execute(sa.delete(ClubMembership))
+        connection.execute(sa.delete(MembershipApplication))
         connection.execute(sa.delete(Club))
         connection.execute(sa.delete(ClubCreationRequest))
         connection.execute(sa.delete(User))
@@ -46,6 +52,7 @@ def engine() -> sa.Engine:
     finally:
         with database_engine.begin() as connection:
             connection.execute(sa.delete(ClubMembership))
+            connection.execute(sa.delete(MembershipApplication))
             connection.execute(sa.delete(Club))
             connection.execute(sa.delete(ClubCreationRequest))
             connection.execute(sa.delete(User))

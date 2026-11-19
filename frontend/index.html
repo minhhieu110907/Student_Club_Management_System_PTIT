@@ -11,7 +11,7 @@
     <header class="topbar">
       <div class="topbar-identity">
         <strong class="brand">SCMS</strong>
-        <span class="topbar-context">Club creation</span>
+        <span class="topbar-context">Clubs and memberships</span>
       </div>
       <div id="session-summary">Checking session…</div>
     </header>
@@ -83,21 +83,31 @@
             <p class="sidebar-label">Workspace</p>
             <h2>Personal</h2>
             <p>Role: Student</p>
-            <div class="sidebar-active">Club requests</div>
-            <span>Proposal and status</span>
+            <div class="sidebar-active">Clubs and memberships</div>
+            <span>Discover, join, review, and leave</span>
           </aside>
 
           <div class="workspace-content">
             <div class="hero">
               <div>
                 <p class="eyebrow">Personal workspace</p>
-                <h1>Club creation requests</h1>
-                <p class="lead">Submit a proposal and follow its approval status.</p>
+                <h1>My club workspace</h1>
+                <p class="lead">Discover clubs and follow every membership decision.</p>
               </div>
               <button id="logout-student" class="secondary">Sign out</button>
             </div>
 
-            <div class="student-grid">
+            <div class="membership-layout">
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>Discover active clubs</h2>
+                  <p>Applications are reviewed by an active Manager of each club.</p>
+                </div>
+                <div id="discovery-list" class="cards discovery-grid loading">
+                  Loading active clubs…
+                </div>
+              </section>
+
               <section class="panel proposal-panel">
                 <div class="section-heading">
                   <h2>Propose a club</h2>
@@ -156,6 +166,35 @@
                   <div id="club-list" class="cards loading">Loading clubs…</div>
                 </section>
               </div>
+
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>My membership applications</h2>
+                  <p>Rejected and approved applications remain visible as history.</p>
+                </div>
+                <div id="membership-application-list" class="cards loading">
+                  Loading membership applications…
+                </div>
+              </section>
+
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>My memberships</h2>
+                  <p>Members may leave; Managers must retain their role in V1.</p>
+                </div>
+                <div id="membership-list" class="cards loading">Loading memberships…</div>
+              </section>
+
+              <section id="manager-panel" class="panel full-width-panel hidden">
+                <div class="section-heading">
+                  <h2>Manager review queue</h2>
+                  <p>Only applications for clubs you actively manage are shown.</p>
+                </div>
+                <div id="manager-membership-list" class="cards loading">
+                  Loading pending applications…
+                </div>
+                <p id="manager-message" class="message" aria-live="polite"></p>
+              </section>
             </div>
           </div>
         </div>
