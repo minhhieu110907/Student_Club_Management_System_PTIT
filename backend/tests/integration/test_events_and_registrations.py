@@ -241,6 +241,14 @@ def test_event_lifecycle_authorization_visibility_and_deadlines(engine: sa.Engin
         service.get_event_detail(draft_id, _actor(1), session)
 
     with Session(engine, autoflush=False, expire_on_commit=False) as session:
+        managed = service.list_managed_club_events(11, _actor(2), session)
+        assert managed.total == 1
+        assert managed.items[0].id == draft_id
+        empty_managed = service.list_managed_club_events(12, _actor(3), session)
+        assert empty_managed.total == 0
+        assert empty_managed.items == []
+
+    with Session(engine, autoflush=False, expire_on_commit=False) as session:
         updated = service.update_event(
             draft_id, EventUpdate(title="Updated Talk"), _actor(2), session
         )

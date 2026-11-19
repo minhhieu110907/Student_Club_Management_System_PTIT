@@ -226,10 +226,7 @@ def list_managed_club_events(
         session, club_id=club_id, status=status, page=page, page_size=page_size
     )
     return EventListResponse(
-        items=[
-            _event_response(event, club_name, is_registered=is_registered)
-            for event, club_name, is_registered in rows
-        ],
+        items=[_event_response(event, club_name) for event, club_name in rows],
         total=total,
         page=page,
         page_size=page_size,
