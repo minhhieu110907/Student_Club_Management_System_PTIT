@@ -485,6 +485,25 @@ button.danger:hover {
   }
 }
 
+.event-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.event-form-grid .full-span {
+  grid-column: 1 / -1;
+}
+
+.event-detail-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
 @media (max-width: 767px) {
   .topbar {
     min-height: 72px;

@@ -18,6 +18,7 @@ DATABASE_NAMES = (
     "scms_readiness_wrong",
     "scms_registration_verify",
     "scms_club_verify",
+    "scms_events_verify",
 )
 
 

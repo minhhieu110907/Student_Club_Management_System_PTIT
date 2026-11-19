@@ -43,6 +43,9 @@ jobs:
           app/modules/clubs/repository.py
           app/modules/clubs/router.py app/modules/clubs/schemas.py
           app/modules/clubs/service.py
+          app/modules/events/exceptions.py app/modules/events/repository.py
+          app/modules/events/router.py app/modules/events/schemas.py
+          app/modules/events/service.py
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
@@ -58,6 +61,8 @@ jobs:
           tests/test_club_api.py tests/test_membership_api.py
           tests/test_membership_schemas.py tests/integration/test_club_requests.py
           tests/integration/test_membership_lifecycle.py
+          tests/test_events_api.py tests/test_events_schemas.py
+          tests/integration/test_events_and_registrations.py
       - name: Ruff format check
         run: >-
           python -m ruff format --check
@@ -70,6 +75,9 @@ jobs:
           app/modules/clubs/repository.py
           app/modules/clubs/router.py app/modules/clubs/schemas.py
           app/modules/clubs/service.py
+          app/modules/events/exceptions.py app/modules/events/repository.py
+          app/modules/events/router.py app/modules/events/schemas.py
+          app/modules/events/service.py
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
@@ -85,6 +93,8 @@ jobs:
           tests/test_club_api.py tests/test_membership_api.py
           tests/test_membership_schemas.py tests/integration/test_club_requests.py
           tests/integration/test_membership_lifecycle.py
+          tests/test_events_api.py tests/test_events_schemas.py
+          tests/integration/test_events_and_registrations.py
       - name: Ordinary tests
         run: python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest -m "not integration" -q
 
@@ -135,7 +145,8 @@ jobs:
             scms_readiness_ready \
             scms_readiness_wrong \
             scms_registration_verify \
-            scms_club_verify
+            scms_club_verify \
+            scms_events_verify
           do
             DATABASE_URL="mysql+pymysql://root:${CI_MYSQL_PASSWORD}@127.0.0.1:3306/${database}" \
               python -m alembic -c alembic.ini upgrade head
@@ -155,6 +166,7 @@ jobs:
           SCMS_READINESS_WRONG_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_readiness_wrong
           SCMS_REGISTRATION_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_registration_verify
           SCMS_CLUB_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_club_verify
+          SCMS_EVENTS_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_events_verify
         run: >-
           python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest
           -m integration --require-integration-env -q

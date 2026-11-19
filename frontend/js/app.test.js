@@ -57,6 +57,15 @@ function installDom() {
     ["#session-summary", domNode()],
     ["#student-message", domNode()],
     ["#student-view", domNode()],
+    ["#events-list", domNode()],
+    ["#my-registrations-list", domNode()],
+    ["#events-message", domNode()],
+    ["#event-detail-panel", domNode()],
+    ["#manager-events-panel", domNode()],
+    ["#manager-events-list", domNode()],
+    ["#manager-participants-list", domNode()],
+    ["#manager-events-message", domNode()],
+    ["#event-club-select", domNode()],
     ["[data-password-icon='eye']", domNode()],
     ["[data-password-icon='eye-off']", domNode()],
   ]);
@@ -458,6 +467,59 @@ test("authentication and club endpoint paths remain unchanged", () => {
     "/membership-applications/pending",
     "/api/v1/membership-applications/",
     "/api/v1/memberships/",
+    "/api/v1/events",
+    "/api/v1/event-registrations/mine",
+    "/registrations/me",
   ])
     assert.match(source, new RegExp(endpoint.replaceAll("/", "\\/")));
+});
+
+test("events workspace escapes untrusted titles and renders registration controls", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  global.fetch = async (url) => {
+    if (url.startsWith("/api/v1/events?")) {
+      return response(200, {
+        items: [
+          {
+            id: 7,
+            club_id: 1,
+            club_name: "Robotics <Club>",
+            title: "<script>alert(1)</script>",
+            visibility: "PUBLIC_STUDENTS",
+            location: "Hall A",
+            starts_at: "2026-12-01T10:00:00Z",
+            capacity: 10,
+            registration_count: 3,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+      });
+    }
+    if (url.startsWith("/api/v1/event-registrations/mine")) {
+      return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+    }
+    return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+  };
+
+  await auth.loadEventsWorkspace([], auth.state.generation);
+  const eventsHtml = nodes.get("#events-list").innerHTML;
+  assert.ok(!eventsHtml.includes("<script>alert(1)</script>"));
+  assert.ok(eventsHtml.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+  assert.ok(eventsHtml.includes('data-event-register="7"'));
 });

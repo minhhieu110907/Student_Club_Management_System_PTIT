@@ -195,6 +195,91 @@
                 </div>
                 <p id="manager-message" class="message" aria-live="polite"></p>
               </section>
+
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>Upcoming &amp; published events</h2>
+                  <p>Register for public events or events of clubs you belong to.</p>
+                </div>
+                <div id="events-list" class="cards discovery-grid loading">Loading events…</div>
+                <div id="event-detail-panel" class="event-detail-panel hidden"></div>
+                <p id="events-message" class="message" aria-live="polite"></p>
+              </section>
+
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>My event registrations</h2>
+                  <p>Track your registrations and cancel before the event deadline.</p>
+                </div>
+                <div id="my-registrations-list" class="cards loading">
+                  Loading registrations…
+                </div>
+              </section>
+
+              <section id="manager-events-panel" class="panel full-width-panel hidden">
+                <div class="section-heading">
+                  <h2>Manage club events</h2>
+                  <p>Create, publish, cancel events, and inspect registered participants.</p>
+                </div>
+                <form id="event-create-form" class="stack event-form-grid">
+                  <label>
+                    Club
+                    <select id="event-club-select" name="club_id" required></select>
+                  </label>
+                  <label>
+                    Title
+                    <input name="title" maxlength="200" placeholder="Event title" required />
+                  </label>
+                  <label>
+                    Location
+                    <input name="location" maxlength="255" placeholder="Room / Venue" required />
+                  </label>
+                  <label>
+                    Visibility
+                    <select name="visibility" required>
+                      <option value="PUBLIC_STUDENTS">Public (all students)</option>
+                      <option value="CLUB_MEMBERS_ONLY">Club members only</option>
+                    </select>
+                  </label>
+                  <label>
+                    Capacity
+                    <input name="capacity" type="number" min="1" max="100000" value="30" required />
+                  </label>
+                  <label>
+                    Starts at
+                    <input name="starts_at" type="datetime-local" required />
+                  </label>
+                  <label>
+                    Ends at
+                    <input name="ends_at" type="datetime-local" required />
+                  </label>
+                  <label>
+                    Registration opens at
+                    <input name="registration_opens_at" type="datetime-local" required />
+                  </label>
+                  <label>
+                    Registration closes at
+                    <input name="registration_closes_at" type="datetime-local" required />
+                  </label>
+                  <label>
+                    Cancellation deadline (optional)
+                    <input name="cancellation_deadline_at" type="datetime-local" />
+                  </label>
+                  <label class="full-span">
+                    Description
+                    <textarea
+                      name="description"
+                      rows="3"
+                      placeholder="Describe the event agenda and details"
+                      required
+                    ></textarea>
+                  </label>
+                  <button class="primary-action">Create draft event</button>
+                </form>
+                <div id="manager-events-list" class="cards loading">Loading club events…</div>
+                <div id="manager-participants-list" class="cards hidden"></div>
+                <p id="manager-events-message" class="message" aria-live="polite"></p>
+              </section>
             </div>
           </div>
         </div>
