@@ -37,13 +37,43 @@
 - Safety decisions: CI uses synthetic credentials, a fresh MySQL service without persistent volumes, explicit migrations, seven isolated schemas, and a helper that refuses non-CI or non-loopback targets. Existing Windows verification harnesses and Compose topology are unchanged.
 - Open issue: Existing `StarletteDeprecationWarning` for the current `httpx`/`TestClient` combination remains non-blocking.
 
-### SCMS Day 04 — 2026-10-28 — STATUS: IN PROGRESS
-- Branch / commits / PR: `feature/day04-security-primitives`; security primitives `96f2254`; registration/session foundation `ca7495e`; login/current-user authentication `7080f2b`; refresh rotation/logout `5c29413`; PR not yet created.
+### SCMS Day 04 — 2026-10-29 — STATUS: VERIFIED (MERGED)
+- Branch / commits / PR: `feature/day04-security-primitives`; security primitives `96f2254`; registration/session foundation `ca7495e`; login/current-user authentication `7080f2b`; refresh rotation/logout `5c29413`; docs `bc305e9`; merged to `main` via PR #5 (`6400a56`).
 - Implemented: Argon2id password hashing; public STUDENT registration; uniform login failures; HS256 access JWTs; `GET /api/v1/auth/me`; opaque refresh credentials stored only as SHA-256 digests; atomic initial-session issuance; strict refresh rotation; rotated-token reuse family revocation; idempotent logout; HttpOnly refresh cookie; exact Origin allowlist validation.
 - Lifetimes and policies: access JWT 10 minutes; refresh token sliding lifetime 7 days capped by the family absolute lifetime of 30 days; family retention timestamp 30 days after absolute expiry; cookie uses `HttpOnly`, `SameSite=Lax`, auth-scoped Path, and environment-aware `Secure` with production fail-closed validation.
-- Final local verification: actual-route disposable-MySQL E2E gate PASS (`1 passed`); ordinary tests PASS (`203 passed, 26 deselected`); disposable MySQL 8.4.4 integration PASS (`26 passed, 203 deselected`); Ruff lint and format PASS; `pip check` PASS; production Docker image build PASS; `git diff --check` PASS.
+- Local verification (2026-10-28): actual-route disposable-MySQL E2E gate PASS (`1 passed`); ordinary tests PASS (`203 passed, 26 deselected`); disposable MySQL 8.4.4 integration PASS (`26 passed, 203 deselected`); Ruff lint and format PASS; `pip check` PASS; production Docker image build PASS; `git diff --check` PASS.
 - Concurrency and failure evidence: family-first `SELECT ... FOR UPDATE` serializes refresh; predecessor is flushed rotated before successor insert to preserve the generated single-current-token guard; concurrent use of one predecessor deliberately causes one rotation and one strict-reuse family revocation; injected successor failure rolls back predecessor rotation.
 - Schema / migration changes: None. Authentication uses the existing `users`, `refresh_token_families`, and `refresh_tokens` schema.
-- Known V1 limitations: concurrent retry or multi-tab refresh can trigger strict family revocation; logout does not blacklist already issued access JWTs, whose residual validity is at most 10 minutes; no logout-all-sessions, cleanup job, Redis rate limiting, or browser refresh serialization; frontend authentication remains deferred.
-- Open issue: Existing Starlette `httpx`/`TestClient` deprecation warning remains non-blocking. GitHub-hosted PR CI is not yet verified, so Day 04 remains IN PROGRESS pending owner PR review.
+- Known V1 limitations: concurrent retry or multi-tab refresh can trigger strict family revocation; logout does not blacklist already issued access JWTs, whose residual validity is at most 10 minutes; no logout-all-sessions, cleanup job, or Redis rate limiting.
 - Evidence: `docs/decisions/0001-authentication-security-foundation.md`, `backend/app/core/security/`, `backend/app/modules/identity/`, `backend/tests/test_auth_api.py`, `backend/tests/test_refresh_service.py`, and `backend/tests/integration/test_registration.py`.
+
+### SCMS Day 05 — 2026-11-01 — STATUS: VERIFIED (MERGED)
+- Branch / commits / PR: `feature/day05-club-creation` (`9bc6aab`); merged to `main` via PR #6 (`b66a041`).
+- Implemented (dựa trên code & git history):
+  - Backend Club Creation & System Admin Review (`backend/app/modules/clubs/`): `POST /api/v1/club-requests`, `GET /api/v1/club-requests/mine`, `GET /api/v1/club-requests/{request_id}`, `GET /api/v1/admin/club-requests/pending`, `POST /api/v1/admin/club-requests/{request_id}/approve`, `POST /api/v1/admin/club-requests/{request_id}/reject`.
+  - Atomic approval tạo `Club` + founder `MANAGER` `ClubMembership` trong một transaction; khóa dòng request bằng `SELECT ... FOR UPDATE` chống duyệt trùng.
+  - Frontend Vanilla JS (`frontend/index.html`, `frontend/css/styles.css`, `frontend/js/app.js`, `frontend/js/app.test.js`): auth flow (kèm refresh-token serialization), tạo yêu cầu lập CLB (Student), và màn hình duyệt yêu cầu (Admin); bổ sung Prettier config (`.prettierrc.json`, `.prettierignore`) và UI/UX PDF references (`UI_UX/`).
+- Verification status: Các kịch bản Club Creation & Admin Review đã được kiểm chứng gộp trong bộ test tích hợp và unit test tại mốc Day 06 (`test_club_requests.py`, `test_club_api.py`, `frontend/js/app.test.js`). Hosted GitHub Actions logs cho PR #6 không lưu trong local Git.
+- Evidence: `backend/app/modules/clubs/`, `backend/tests/test_club_api.py`, `backend/tests/integration/test_club_requests.py`, `frontend/index.html`, `frontend/js/app.js`, `frontend/js/app.test.js`.
+
+### SCMS Day 06 — 2026-11-19 — STATUS: VERIFIED (MERGED)
+- Branch / commits / PR: `feature/day06-membership` (`43015a9`); merged to `main` via PR #7 (`ac3cc4d`).
+- Implemented:
+  - Membership Lifecycle API (`backend/app/modules/clubs/`): `GET /api/v1/clubs`, `GET /api/v1/clubs/mine`, `POST /api/v1/clubs/{club_id}/membership-applications`, `GET /api/v1/membership-applications/mine`, `GET /api/v1/memberships/mine`, `GET /api/v1/clubs/{club_id}/membership-applications/pending`, `POST /api/v1/membership-applications/{application_id}/approve`, `POST /api/v1/membership-applications/{application_id}/reject`, `POST /api/v1/memberships/{membership_id}/leave`, và `GET /api/v1/clubs/{club_id}/members`.
+  - Club-scoped authorization (`backend/app/modules/clubs/authorization.py` với `require_active_manager`).
+  - Bounded pagination (`page >= 1`, `1 <= page_size <= 100`) và single-JOIN query (`ClubMembership` + `User.full_name`) cho `GET /api/v1/clubs/{club_id}/members` (không N+1, không lộ email/password hash/token).
+  - Frontend Vanilla JS cập nhật giao diện ứng tuyển, duyệt đơn, rời CLB và test tương ứng.
+- Concurrency & Security mechanisms:
+  - Sửa lỗi stale SQLAlchemy identity-map khi khóa dòng bằng `.execution_options(populate_existing=True)` trên `SELECT ... FOR UPDATE`, ngăn tình trạng `approve` và `reject` đồng thời cùng commit.
+  - Bảo vệ invariant "final active MANAGER cannot leave an active club" bằng khóa dòng `Club` (`FOR UPDATE`) trước khi kiểm tra số lượng active `MANAGER`, bảo toàn ít nhất 1 active `MANAGER` khi có concurrent leave requests mà không deadlock.
+  - Giữ `lock_users` + DB unique constraints (`uq_membership_pending`, `uq_membership_active`, `uq_club_memberships_source_application_id`).
+- Local verification results (2026-11-19):
+  - Ordinary tests (`.\.venv\Scripts\python.exe -m pytest -m "not integration" -q`): **PASS — `218 passed, 46 deselected`**.
+  - Full fail-closed MySQL 8.4.4 integration suite (`.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider -m integration --require-integration-env -q` trên 9 isolated schemas disposable): **PASS — `46 passed, 0 skipped`**.
+  - Frontend JS tests (`node --test frontend\js\app.test.js`): **PASS — `17 passed, 0 failed`**.
+  - Ruff lint & format check (Day 06 & CI contract scope): **PASS — `12 files already formatted`**.
+  - `git diff --check`: **PASS**.
+  - Lưu ý: Đây là kết quả xác minh **local**; log chạy thực tế trên hosted GitHub Actions cho PR #7 không có trong local Git nên không suy diễn trạng thái hosted CI từ kết quả local.
+- Schema / migration changes: None (dùng schema `20261026_01`).
+- Next step: Phase Events & Registration (`feature/day07-events`).
+- Evidence: `backend/app/modules/clubs/authorization.py`, `backend/app/modules/clubs/repository.py`, `backend/app/modules/clubs/service.py`, `backend/app/modules/clubs/router.py`, `backend/tests/test_membership_api.py`, `backend/tests/integration/test_membership_lifecycle.py`, `frontend/js/app.js`, `frontend/js/app.test.js`.

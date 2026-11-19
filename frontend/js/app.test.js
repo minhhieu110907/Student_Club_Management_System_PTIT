@@ -57,6 +57,22 @@ function installDom() {
     ["#session-summary", domNode()],
     ["#student-message", domNode()],
     ["#student-view", domNode()],
+    ["#events-list", domNode()],
+    ["#events-pagination", domNode()],
+    ["#my-registrations-list", domNode()],
+    ["#my-registrations-pagination", domNode()],
+    ["#events-message", domNode()],
+    ["#event-detail-panel", domNode()],
+    ["#event-create-form", domNode()],
+    ["#event-submit-btn", domNode()],
+    ["#event-edit-cancel", domNode()],
+    ["#manager-events-panel", domNode()],
+    ["#manager-events-list", domNode()],
+    ["#manager-events-pagination", domNode()],
+    ["#manager-participants-list", domNode()],
+    ["#manager-participants-pagination", domNode()],
+    ["#manager-events-message", domNode()],
+    ["#event-club-select", domNode()],
     ["[data-password-icon='eye']", domNode()],
     ["[data-password-icon='eye-off']", domNode()],
   ]);
@@ -458,6 +474,173 @@ test("authentication and club endpoint paths remain unchanged", () => {
     "/membership-applications/pending",
     "/api/v1/membership-applications/",
     "/api/v1/memberships/",
+    "/api/v1/events",
+    "/api/v1/event-registrations/mine",
+    "/registrations/me",
   ])
     assert.match(source, new RegExp(endpoint.replaceAll("/", "\\/")));
+});
+
+test("events workspace escapes untrusted titles and renders registration controls", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  global.fetch = async (url) => {
+    if (url.startsWith("/api/v1/events?")) {
+      return response(200, {
+        items: [
+          {
+            id: 7,
+            club_id: 1,
+            club_name: "Robotics <Club>",
+            title: "<script>alert(1)</script>",
+            visibility: "PUBLIC_STUDENTS",
+            location: "Hall A",
+            starts_at: "2026-12-01T10:00:00Z",
+            capacity: 10,
+            registration_count: 3,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+      });
+    }
+    if (url.startsWith("/api/v1/event-registrations/mine")) {
+      return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+    }
+    return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+  };
+
+  await auth.loadEventsWorkspace([], auth.state.generation);
+  const eventsHtml = nodes.get("#events-list").innerHTML;
+  assert.ok(!eventsHtml.includes("<script>alert(1)</script>"));
+  assert.ok(eventsHtml.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+  assert.ok(eventsHtml.includes('data-event-register="7"'));
+});
+
+test("events workspace uses backend is_registered flag and renders pagination", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  global.fetch = async (url) => {
+    if (url.startsWith("/api/v1/events?")) {
+      return response(200, {
+        items: [
+          {
+            id: 99,
+            club_id: 1,
+            club_name: "Robotics",
+            title: "Deep Tech",
+            visibility: "PUBLIC_STUDENTS",
+            location: "Hall B",
+            starts_at: "2026-12-01T10:00:00Z",
+            capacity: 10,
+            registration_count: 10,
+            is_registered: true,
+          },
+        ],
+        total: 25,
+        page: 1,
+        page_size: 20,
+      });
+    }
+    return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+  };
+
+  await auth.loadEventsWorkspace([], auth.state.generation);
+  const eventsHtml = nodes.get("#events-list").innerHTML;
+  assert.ok(eventsHtml.includes('data-event-cancel-reg="99"'));
+  const paginationHtml = nodes.get("#events-pagination").innerHTML;
+  assert.ok(paginationHtml.includes("Page 1 of 2"));
+});
+
+test("edit event mode restricts PUBLISHED fields and sends PATCH payload", async () => {
+  const nodes = installDom();
+  const fields = {
+    club_id: { value: "1", disabled: false },
+    title: { value: "", disabled: false },
+    location: { value: "", disabled: false },
+    description: { value: "", disabled: false },
+    visibility: { value: "PUBLIC_STUDENTS", disabled: false },
+    capacity: { value: "10", disabled: false },
+    starts_at: { value: "", disabled: false },
+    ends_at: { value: "", disabled: false },
+    registration_opens_at: { value: "", disabled: false },
+    registration_closes_at: { value: "", disabled: false },
+    cancellation_deadline_at: { value: "", disabled: false },
+  };
+  const form = nodes.get("#event-create-form");
+  form.elements = fields;
+  form.reset = () => {};
+
+  auth.replaceSession("valid-token");
+  auth.setEventFormMode({
+    id: 12,
+    club_id: 1,
+    status: "PUBLISHED",
+    title: "Published Talk",
+    location: "Room 1",
+    description: "Desc",
+    visibility: "PUBLIC_STUDENTS",
+    capacity: 15,
+    starts_at: "2026-12-05T10:00:00Z",
+    ends_at: "2026-12-05T12:00:00Z",
+    registration_opens_at: "2026-12-01T10:00:00Z",
+    registration_closes_at: "2026-12-04T10:00:00Z",
+    cancellation_deadline_at: null,
+  });
+
+  assert.equal(fields.club_id.disabled, true);
+  assert.equal(fields.visibility.disabled, true);
+  assert.equal(fields.starts_at.disabled, true);
+  assert.equal(fields.ends_at.disabled, true);
+  assert.equal(fields.registration_opens_at.disabled, true);
+  assert.equal(fields.title.disabled, false);
+  assert.equal(fields.capacity.disabled, false);
+
+  let capturedMethod = null;
+  let capturedBody = null;
+  global.FormData = class {
+    get(key) {
+      return fields[key]?.value ?? "";
+    }
+  };
+  global.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/events/12") {
+      capturedMethod = options.method;
+      capturedBody = JSON.parse(options.body);
+      return response(409, { message: "Event capacity cannot be reduced below active registrations" });
+    }
+    return response(200, {});
+  };
+
+  await auth.createClubEvent({ preventDefault() {}, currentTarget: form });
+  assert.equal(capturedMethod, "PATCH");
+  assert.equal("visibility" in capturedBody, false);
+  assert.equal("starts_at" in capturedBody, false);
+  assert.equal(
+    nodes.get("#manager-events-message").textContent,
+    "Event capacity cannot be reduced below active registrations",
+  );
 });

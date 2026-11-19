@@ -22,6 +22,7 @@ from app.db.session import DatabaseResources, build_database_resources
 from app.health.router import router as health_router
 from app.health.service import ReadinessService, build_readiness_service
 from app.modules.clubs.router import router as clubs_router
+from app.modules.events.router import router as events_router
 from app.modules.identity.auth_config import (
     AuthenticationSettings,
     build_authentication_settings,
@@ -144,6 +145,7 @@ def create_app(
     application.include_router(health_router)
     application.include_router(identity_router)
     application.include_router(clubs_router)
+    application.include_router(events_router)
     return application
 
 

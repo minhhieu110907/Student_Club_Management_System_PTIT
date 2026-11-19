@@ -150,3 +150,14 @@ Do not mark an entire day DONE without user approval.
 - Never trade security, performance, or correctness for shorter syntax. Do not introduce unnecessary abstractions or large-scale refactors solely for formatting.
 - Use existing formatter configuration when present. Use Prettier for HTML, CSS, and JavaScript when available, with a preferred print width of 100 and 2-space indentation; use Ruff for Python. If Prettier configuration is absent, propose a minimal `.prettierrc.json` and `.prettierignore` without adding unnecessary frontend runtime dependencies.
 - Treat formatting as a standard verification gate before owner review. Check consistent formatting, remove dense one-line functions and excessive nesting, run relevant syntax, lint, formatting, and behavioral tests, keep the change scoped, and distinguish formatting-only changes from behavioral changes in the handoff.
+
+## 13. MVP Acceleration & Engineering Execution Guidelines
+
+- Prioritize complete, usable vertical slices (Backend + Frontend + real API integration) over isolated infrastructure or speculative backend abstractions.
+- Reuse proven implementations and patterns already present in SCMS or RetailOps V1 (e.g., pagination contracts, strict AI tool budgets/contexts) before writing new code, adapting authorization strictly to SCMS club-scoped and user-scoped rules.
+- Apply risk-based review: keep ordinary CRUD/UI slices lightweight and focused; require explicit architectural reasoning and targeted evidence for authentication, authorization, migrations, concurrent writes, transaction boundaries, capacity protection, and AI tool execution.
+- Avoid over-engineering: do not introduce generic frameworks, distributed locks, microservices, complex worker/outbox pipelines, or elaborate AI orchestration unless an approved MVP requirement actually depends on them.
+- For every concurrent write path, prove the database invariant using MySQL transactions, constraints, atomic updates, or row locks backed by real MySQL concurrency tests.
+- For every list endpoint, enforce bounded pagination and prevent N+1 ORM queries.
+- Preserve all existing database, secrets, security, quality, and Git safety rules in Sections 3–12 without weakening any requirement.
+- Write documentation, progress reports, and PR descriptions in Vietnamese while keeping code identifiers and standard technical terminology in English where appropriate.
