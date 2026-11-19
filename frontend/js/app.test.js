@@ -47,6 +47,12 @@ function installDom() {
     ["#password-toggle", domNode()],
     ["#request-list", domNode()],
     ["#club-list", domNode()],
+    ["#discovery-list", domNode()],
+    ["#manager-membership-list", domNode()],
+    ["#manager-message", domNode()],
+    ["#manager-panel", domNode()],
+    ["#membership-application-list", domNode()],
+    ["#membership-list", domNode()],
     ["#admin-list", domNode()],
     ["#session-summary", domNode()],
     ["#student-message", domNode()],
@@ -362,6 +368,62 @@ test("a failed admin decision cannot affect a replacement session", async () => 
   assert.equal(nodes.get("#admin-message").textContent, "replacement session message");
 });
 
+test("a completed membership application cannot affect a replacement session", async () => {
+  const nodes = installDom();
+  auth.replaceSession("student-token");
+  auth.state.user = { global_role: "STUDENT" };
+  const mutation = deferred();
+  let disabled = false;
+  global.FormData = class {
+    get() {
+      return "Learn backend";
+    }
+  };
+  global.fetch = async () => mutation.promise;
+  const form = {
+    dataset: { clubId: "11" },
+    querySelector() {
+      return {
+        set disabled(value) {
+          disabled = value;
+        },
+      };
+    },
+  };
+
+  const submission = auth.submitMembershipApplication({
+    preventDefault() {},
+    target: { closest: () => form },
+  });
+  auth.replaceSession("replacement-token");
+  nodes.get("#student-message").textContent = "replacement session message";
+  mutation.resolve(response(201, { id: 42 }));
+  await submission;
+
+  assert.equal(disabled, true);
+  assert.equal(nodes.get("#student-message").textContent, "replacement session message");
+});
+
+test("a completed leave cannot affect a replacement session", async () => {
+  const nodes = installDom();
+  auth.replaceSession("student-token");
+  auth.state.user = { global_role: "STUDENT" };
+  const mutation = deferred();
+  global.window = { confirm: () => true };
+  global.fetch = async () => mutation.promise;
+  const button = { dataset: { leaveMembership: "31" }, disabled: false };
+
+  const leaving = auth.leaveClub({ target: { closest: () => button } });
+  auth.replaceSession("replacement-token");
+  nodes.get("#student-message").textContent = "replacement session message";
+  mutation.resolve(response(200, { status: "LEFT" }));
+  await leaving;
+
+  assert.equal(button.disabled, true);
+  assert.equal(nodes.get("#student-message").textContent, "replacement session message");
+  delete global.window;
+});
+
 test("password visibility remains accessible and focus preserving", () => {
   const nodes = installDom();
   const input = nodes.get("#login-password");
@@ -390,6 +452,12 @@ test("authentication and club endpoint paths remain unchanged", () => {
     "/api/v1/club-requests/mine",
     "/api/v1/clubs/mine",
     "/api/v1/admin/club-requests/pending",
+    "/api/v1/clubs",
+    "/api/v1/membership-applications/mine",
+    "/api/v1/memberships/mine",
+    "/membership-applications/pending",
+    "/api/v1/membership-applications/",
+    "/api/v1/memberships/",
   ])
     assert.match(source, new RegExp(endpoint.replaceAll("/", "\\/")));
 });
