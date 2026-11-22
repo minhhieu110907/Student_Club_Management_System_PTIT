@@ -73,6 +73,19 @@ function installDom() {
     ["#manager-participants-pagination", domNode()],
     ["#manager-events-message", domNode()],
     ["#event-club-select", domNode()],
+    ["#my-tasks-list", domNode()],
+    ["#my-tasks-pagination", domNode()],
+    ["#my-tasks-message", domNode()],
+    ["#manager-tasks-panel", domNode()],
+    ["#manager-tasks-event-title", domNode()],
+    ["#manager-task-progress", domNode()],
+    ["#task-create-form", domNode()],
+    ["#task-assignee-select", domNode()],
+    ["#task-submit-btn", domNode()],
+    ["#task-edit-cancel", domNode()],
+    ["#manager-tasks-list", domNode()],
+    ["#manager-tasks-pagination", domNode()],
+    ["#manager-tasks-message", domNode()],
     ["[data-password-icon='eye']", domNode()],
     ["[data-password-icon='eye-off']", domNode()],
   ]);
@@ -642,5 +655,87 @@ test("edit event mode restricts PUBLISHED fields and sends PATCH payload", async
   assert.equal(
     nodes.get("#manager-events-message").textContent,
     "Event capacity cannot be reduced below active registrations",
+  );
+});
+
+test("manager task board renders progress, members, and escapes task content", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  global.fetch = async (url) => {
+    if (url === "/api/v1/events/5/task-progress") {
+      return response(200, {
+        event_id: 5,
+        total: 2,
+        todo: 1,
+        in_progress: 0,
+        done: 1,
+        completion_percentage: 50.0,
+      });
+    }
+    if (url.startsWith("/api/v1/events/5/tasks?")) {
+      return response(200, {
+        items: [
+          {
+            id: 10,
+            title: "<img src=x onerror=alert(1)>",
+            description: "Stage setup",
+            status: "TODO",
+            assignee_membership_id: 202,
+            assignee_name: "Bao Tran",
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+      });
+    }
+    if (url.startsWith("/api/v1/clubs/11/members?")) {
+      return response(200, {
+        items: [{ membership_id: 202, user_id: 4, full_name: "Bao Tran", role: "MEMBER" }],
+        total: 1,
+        page: 1,
+        page_size: 100,
+      });
+    }
+    return response(200, {});
+  };
+
+  await auth.loadManagerTaskBoard(5, 11, auth.state.generation);
+  assert.ok(nodes.get("#manager-task-progress").textContent.includes("50%"));
+  assert.ok(nodes.get("#task-assignee-select").innerHTML.includes('value="202"'));
+  const tasksHtml = nodes.get("#manager-tasks-list").innerHTML;
+  assert.ok(!tasksHtml.includes("<img src=x onerror=alert(1)>"));
+  assert.ok(tasksHtml.includes("&lt;img src=x onerror=alert(1)&gt;"));
+});
+
+test("member my-tasks handles status update error without mock fallback", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  global.document.querySelector = (selector) => {
+    if (selector === 'select[data-my-task-select="10"]') return { value: "DONE" };
+    return nodes.get(selector);
+  };
+  global.fetch = async (url, options = {}) => {
+    if (url === "/api/v1/event-tasks/10/status" && options.method === "PATCH") {
+      return response(403, { message: "You do not have permission to access or update this task" });
+    }
+    return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+  };
+
+  const button = { dataset: { myTaskSave: "10" }, disabled: false };
+  await auth.handleMyTaskAction({ target: { closest: () => button } });
+  assert.equal(button.disabled, false);
+  assert.equal(
+    nodes.get("#my-tasks-message").textContent,
+    "You do not have permission to access or update this task",
   );
 });

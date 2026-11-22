@@ -28,6 +28,7 @@ from app.modules.identity.auth_config import (
     build_authentication_settings,
 )
 from app.modules.identity.router import router as identity_router
+from app.modules.tasks.router import router as tasks_router
 
 
 class RequestContextMiddleware:
@@ -146,6 +147,7 @@ def create_app(
     application.include_router(identity_router)
     application.include_router(clubs_router)
     application.include_router(events_router)
+    application.include_router(tasks_router)
     return application
 
 

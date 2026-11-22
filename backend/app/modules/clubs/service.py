@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.clubs.authorization import require_active_manager
 from app.modules.clubs.exceptions import (
+    ActiveAssignedTasksExistError,
     ActiveMembershipExistsError,
     AdminRoleRequiredError,
     ClubNotEligibleError,
@@ -43,6 +44,7 @@ from app.modules.clubs.repository import (
     find_membership_club_id,
     find_pending_membership_application,
     find_users_by_ids,
+    has_unfinished_assigned_tasks,
     list_active_club_members,
     list_active_clubs,
     list_active_manager_memberships_for_update,
@@ -515,6 +517,8 @@ def leave_membership(
             active_managers = list_active_manager_memberships_for_update(session, club_id)
             if len(active_managers) <= 1:
                 raise ManagerLeaveNotAllowedError()
+        if has_unfinished_assigned_tasks(session, membership.id):
+            raise ActiveAssignedTasksExistError()
 
         membership.status = "LEFT"
         membership.ended_at = _timestamp()

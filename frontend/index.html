@@ -218,6 +218,16 @@
                 <div id="my-registrations-pagination" class="pagination-bar"></div>
               </section>
 
+              <section class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>My event tasks</h2>
+                  <p>Tasks assigned to your active club memberships.</p>
+                </div>
+                <div id="my-tasks-list" class="cards loading">Loading tasks…</div>
+                <div id="my-tasks-pagination" class="pagination-bar"></div>
+                <p id="my-tasks-message" class="message" aria-live="polite"></p>
+              </section>
+
               <section id="manager-events-panel" class="panel full-width-panel hidden">
                 <div class="section-heading">
                   <h2>Manage club events</h2>
@@ -287,6 +297,45 @@
                 <div id="manager-events-pagination" class="pagination-bar"></div>
                 <div id="manager-participants-list" class="cards hidden"></div>
                 <div id="manager-participants-pagination" class="pagination-bar hidden"></div>
+                <div id="manager-tasks-panel" class="event-detail-panel hidden">
+                  <div class="section-heading">
+                    <h3 id="manager-tasks-event-title">Event task board</h3>
+                    <p id="manager-task-progress" class="meta">Loading progress…</p>
+                  </div>
+                  <form id="task-create-form" class="stack event-form-grid">
+                    <label>
+                      Task title
+                      <input name="title" maxlength="200" placeholder="Task title" required />
+                    </label>
+                    <label>
+                      Assignee (active club member)
+                      <select id="task-assignee-select" name="assignee_membership_id">
+                        <option value="">Unassigned</option>
+                      </select>
+                    </label>
+                    <label>
+                      Due at (optional)
+                      <input name="due_at" type="datetime-local" />
+                    </label>
+                    <label class="full-span">
+                      Description (optional)
+                      <textarea
+                        name="description"
+                        rows="2"
+                        placeholder="Task instructions"
+                      ></textarea>
+                    </label>
+                    <div class="actions full-span">
+                      <button id="task-submit-btn" class="primary-action">Create task</button>
+                      <button id="task-edit-cancel" type="button" class="secondary hidden">
+                        Cancel edit
+                      </button>
+                    </div>
+                  </form>
+                  <div id="manager-tasks-list" class="cards"></div>
+                  <div id="manager-tasks-pagination" class="pagination-bar"></div>
+                  <p id="manager-tasks-message" class="message" aria-live="polite"></p>
+                </div>
                 <p id="manager-events-message" class="message" aria-live="polite"></p>
               </section>
             </div>
