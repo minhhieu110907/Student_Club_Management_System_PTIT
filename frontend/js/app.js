@@ -547,6 +547,33 @@ function setTaskFormMode(taskItem) {
   cancelBtn?.classList.remove("hidden");
 }
 
+async function fetchAllClubMembers(clubId, generation = state.generation) {
+  const pageSize = 100;
+  const membersById = new Map();
+  let page = 1;
+
+  while (true) {
+    const data = await api(`/api/v1/clubs/${clubId}/members?page=${page}&page_size=${pageSize}`);
+    if (state.generation !== generation) return null;
+
+    const items = Array.isArray(data.items) ? data.items : [];
+    for (const member of items) {
+      if (!membersById.has(member.membership_id)) {
+        membersById.set(member.membership_id, member);
+      }
+    }
+
+    const effectivePageSize = Number(data.page_size) || pageSize;
+    const total = Number(data.total ?? items.length);
+    if (items.length === 0 || items.length < effectivePageSize || page * effectivePageSize >= total) {
+      break;
+    }
+    page += 1;
+  }
+
+  return Array.from(membersById.values());
+}
+
 async function loadManagerTaskBoard(eventId, clubId, generation = state.generation) {
   const panel = $("#manager-tasks-panel");
   const listNode = $("#manager-tasks-list");
@@ -554,15 +581,19 @@ async function loadManagerTaskBoard(eventId, clubId, generation = state.generati
   const assigneeSelect = $("#task-assignee-select");
   const msgNode = $("#manager-tasks-message");
   if (!panel || !listNode) return;
+  if (!Number.isInteger(eventId) || eventId <= 0 || !Number.isInteger(clubId) || clubId <= 0) {
+    if (msgNode) message(msgNode, "Event details are unavailable. Please reload.", "error");
+    return;
+  }
 
   const pageSize = 20;
   try {
-    const [progress, tasksPage, membersPage] = await Promise.all([
+    const [progress, tasksPage, allMembers] = await Promise.all([
       api(`/api/v1/events/${eventId}/task-progress`),
       api(`/api/v1/events/${eventId}/tasks?page=${eventsUiState.mgrTasksPage}&page_size=${pageSize}`),
-      api(`/api/v1/clubs/${clubId}/members?page=1&page_size=100`),
+      fetchAllClubMembers(clubId, generation),
     ]);
-    if (state.generation !== generation) return;
+    if (state.generation !== generation || allMembers === null) return;
 
     eventsUiState.tasksEventId = eventId;
     eventsUiState.tasksClubId = clubId;
@@ -575,7 +606,7 @@ async function loadManagerTaskBoard(eventId, clubId, generation = state.generati
     }
     if (assigneeSelect) {
       const currentVal = assigneeSelect.value;
-      const memberOptions = (membersPage.items || [])
+      const memberOptions = allMembers
         .map(
           (m) =>
             `<option value="${m.membership_id}">${escapeHtml(m.full_name)} (${escapeHtml(m.role)})</option>`,
@@ -872,9 +903,15 @@ async function handleManagerEventAction(event) {
   if (tasksBtn) {
     const eventId = Number(tasksBtn.dataset.mgrEventTasks);
     const eventItem = eventsUiState.managedEventsById.get(eventId);
+    if (!Number.isInteger(eventId) || eventId <= 0 || !eventItem) {
+      if (msgNode) {
+        message(msgNode, "Event details are unavailable. Please reload club events.", "error");
+      }
+      return;
+    }
     eventsUiState.mgrTasksPage = 1;
     setTaskFormMode(null);
-    await loadManagerTaskBoard(eventId, eventItem ? eventItem.club_id : 1, generation);
+    await loadManagerTaskBoard(eventId, eventItem.club_id, generation);
     return;
   }
   if (editBtn) {

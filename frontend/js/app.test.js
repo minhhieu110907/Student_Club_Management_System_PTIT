@@ -739,3 +739,136 @@ test("member my-tasks handles status update error without mock fallback", async 
     "You do not have permission to access or update this task",
   );
 });
+
+test("manager task board loads all club member pages, deduplicates, and respects page_size <= 100", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    },
+  });
+  auth.replaceSession("valid-token");
+
+  const memberUrls = [];
+  const pageOneItems = Array.from({ length: 100 }, (_, i) => ({
+    membership_id: i + 1,
+    user_id: i + 1,
+    full_name: `Member ${i + 1}`,
+    role: "MEMBER",
+  }));
+  const pageTwoItems = [
+    // Duplicate of membership_id 100 plus two new members (101, 102) -> partial last page
+    { membership_id: 100, user_id: 100, full_name: "Member 100", role: "MEMBER" },
+    { membership_id: 101, user_id: 101, full_name: "Member 101", role: "MEMBER" },
+    { membership_id: 102, user_id: 102, full_name: "Member 102", role: "MEMBER" },
+  ];
+
+  global.fetch = async (url) => {
+    if (url === "/api/v1/events/5/task-progress") {
+      return response(200, { event_id: 5, total: 0, todo: 0, in_progress: 0, done: 0, completion_percentage: 0 });
+    }
+    if (url.startsWith("/api/v1/events/5/tasks?")) {
+      return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+    }
+    if (url.startsWith("/api/v1/clubs/11/members?")) {
+      memberUrls.push(url);
+      if (url.includes("page=1&")) {
+        return response(200, { items: pageOneItems, total: 102, page: 1, page_size: 100 });
+      }
+      if (url.includes("page=2&")) {
+        return response(200, { items: pageTwoItems, total: 102, page: 2, page_size: 100 });
+      }
+      throw new Error(`Unexpected extra member page request: ${url}`);
+    }
+    return response(200, {});
+  };
+
+  await auth.loadManagerTaskBoard(5, 11, auth.state.generation);
+  assert.deepEqual(memberUrls, [
+    "/api/v1/clubs/11/members?page=1&page_size=100",
+    "/api/v1/clubs/11/members?page=2&page_size=100",
+  ]);
+  const selectHtml = nodes.get("#task-assignee-select").innerHTML;
+  assert.ok(selectHtml.includes('value="101"'));
+  assert.ok(selectHtml.includes('value="102"'));
+  assert.equal(selectHtml.match(/value="100"/g).length, 1);
+});
+
+test("manager task board reports error when a subsequent member page fails", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  const pageOneItems = Array.from({ length: 100 }, (_, i) => ({
+    membership_id: i + 1,
+    user_id: i + 1,
+    full_name: `Member ${i + 1}`,
+    role: "MEMBER",
+  }));
+
+  global.fetch = async (url) => {
+    if (url === "/api/v1/events/5/task-progress") {
+      return response(200, { event_id: 5, total: 0, todo: 0, in_progress: 0, done: 0, completion_percentage: 0 });
+    }
+    if (url.startsWith("/api/v1/events/5/tasks?")) {
+      return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+    }
+    if (url === "/api/v1/clubs/11/members?page=1&page_size=100") {
+      return response(200, { items: pageOneItems, total: 150, page: 1, page_size: 100 });
+    }
+    if (url === "/api/v1/clubs/11/members?page=2&page_size=100") {
+      return response(500, { message: "Member directory unavailable" });
+    }
+    return response(200, {});
+  };
+
+  await auth.loadManagerTaskBoard(5, 11, auth.state.generation);
+  assert.equal(nodes.get("#manager-tasks-message").textContent, "Member directory unavailable");
+  assert.equal(nodes.get("#task-assignee-select").innerHTML, undefined);
+});
+
+test("handleManagerEventAction aborts without club_id=1 fallback when event is missing", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  const requestedUrls = [];
+  global.fetch = async (url) => {
+    requestedUrls.push(url);
+    return response(200, {});
+  };
+
+  const tasksBtn = { dataset: { mgrEventTasks: "999" } };
+  await auth.handleManagerEventAction({
+    target: { closest: (selector) => (selector === "button[data-mgr-event-tasks]" ? tasksBtn : null) },
+  });
+
+  assert.deepEqual(requestedUrls, []);
+  assert.equal(
+    nodes.get("#manager-events-message").textContent,
+    "Event details are unavailable. Please reload club events.",
+  );
+});
+
+test("handleManagerEventAction loads task board with real club_id when event exists", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  auth.eventsUiState.managedEventsById.set(55, { id: 55, club_id: 17, title: "AI Hack" });
+  const requestedUrls = [];
+  global.fetch = async (url) => {
+    requestedUrls.push(url);
+    if (url === "/api/v1/events/55/task-progress") {
+      return response(200, { event_id: 55, total: 0, todo: 0, in_progress: 0, done: 0, completion_percentage: 0 });
+    }
+    return response(200, { items: [], total: 0, page: 1, page_size: 20 });
+  };
+
+  const tasksBtn = { dataset: { mgrEventTasks: "55" } };
+  await auth.handleManagerEventAction({
+    target: { closest: (selector) => (selector === "button[data-mgr-event-tasks]" ? tasksBtn : null) },
+  });
+
+  assert.ok(requestedUrls.includes("/api/v1/clubs/17/members?page=1&page_size=100"));
+  assert.ok(!requestedUrls.some((u) => u.includes("/clubs/1/members")));
+  assert.equal(nodes.get("#manager-tasks-event-title").textContent, "Task board — AI Hack");
+});
