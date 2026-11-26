@@ -95,3 +95,9 @@ class ManagerLeaveNotAllowedError(ConflictException):
     def __init__(self) -> None:
         super().__init__("The final active manager cannot leave an active club")
         self.error_code = "MANAGER_LEAVE_NOT_ALLOWED"
+
+
+class ActiveAssignedTasksExistError(ConflictException):
+    def __init__(self) -> None:
+        super().__init__("Cannot leave club while assigned to unfinished event tasks")
+        self.error_code = "ACTIVE_ASSIGNED_TASKS_EXIST"

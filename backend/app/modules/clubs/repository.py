@@ -7,7 +7,9 @@ from app.modules.clubs.models import (
     ClubMembership,
     MembershipApplication,
 )
+from app.modules.events.models import Event
 from app.modules.identity.models import User
+from app.modules.tasks.models import EventTask
 
 
 def add_club_request(session: Session, request: ClubCreationRequest) -> None:
@@ -289,3 +291,18 @@ def find_clubs_by_ids(session: Session, club_ids: set[int]) -> dict[int, Club]:
     return {
         club.id: club for club in session.scalars(select(Club).where(Club.id.in_(sorted(club_ids))))
     }
+
+
+def has_unfinished_assigned_tasks(session: Session, membership_id: int) -> bool:
+    row = session.scalar(
+        select(EventTask.id)
+        .join(Event, Event.id == EventTask.event_id)
+        .where(
+            EventTask.assignee_membership_id == membership_id,
+            EventTask.status.in_(("TODO", "IN_PROGRESS")),
+            Event.status.in_(("DRAFT", "PUBLISHED")),
+        )
+        .limit(1)
+        .with_for_update()
+    )
+    return row is not None

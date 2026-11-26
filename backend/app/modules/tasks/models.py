@@ -33,7 +33,9 @@ class EventTask(Base):
         MYSQL_TABLE_OPTIONS,
     )
 
-    id: Mapped[int] = mapped_column(mysql.BIGINT(unsigned=False), primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        mysql.BIGINT(unsigned=False), primary_key=True, autoincrement=True
+    )
     event_id: Mapped[int] = mapped_column(mysql.BIGINT(unsigned=False), nullable=False)
     club_id: Mapped[int] = mapped_column(mysql.BIGINT(unsigned=False), nullable=False)
     assignee_membership_id: Mapped[int | None] = mapped_column(mysql.BIGINT(unsigned=False))
@@ -46,7 +48,9 @@ class EventTask(Base):
         mysql.ENUM("TODO", "IN_PROGRESS", "DONE"), nullable=False, server_default="TODO"
     )
     due_at: Mapped[datetime | None] = mapped_column(mysql.DATETIME(fsp=6))
-    version: Mapped[int] = mapped_column(mysql.INTEGER(unsigned=False), nullable=False, server_default="0")
+    version: Mapped[int] = mapped_column(
+        mysql.INTEGER(unsigned=False), nullable=False, server_default="0"
+    )
     completed_at: Mapped[datetime | None] = mapped_column(mysql.DATETIME(fsp=6))
     created_at: Mapped[datetime] = mapped_column(mysql.DATETIME(fsp=6), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(mysql.DATETIME(fsp=6), nullable=False)

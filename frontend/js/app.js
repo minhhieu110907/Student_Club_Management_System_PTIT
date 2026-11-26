@@ -23,18 +23,30 @@ function setPasswordVisibility(visible) {
 const eventsUiState = {
   eventsPage: 1,
   myRegsPage: 1,
+  myTasksPage: 1,
   mgrEventsPage: 1,
   participantsEventId: null,
   participantsPage: 1,
+  tasksEventId: null,
+  tasksClubId: null,
+  mgrTasksPage: 1,
+  editingTaskId: null,
+  managedTasksById: new Map(),
   editingEvent: null,
   managedEventsById: new Map(),
 };
 function resetEventsUiState() {
   eventsUiState.eventsPage = 1;
   eventsUiState.myRegsPage = 1;
+  eventsUiState.myTasksPage = 1;
   eventsUiState.mgrEventsPage = 1;
   eventsUiState.participantsEventId = null;
   eventsUiState.participantsPage = 1;
+  eventsUiState.tasksEventId = null;
+  eventsUiState.tasksClubId = null;
+  eventsUiState.mgrTasksPage = 1;
+  eventsUiState.editingTaskId = null;
+  eventsUiState.managedTasksById.clear();
   eventsUiState.editingEvent = null;
   eventsUiState.managedEventsById.clear();
 }
@@ -292,6 +304,7 @@ function managerEventCard(event) {
       ${publishBtn}
       ${cancelBtn}
       <button type="button" class="secondary" data-mgr-event-participants="${event.id}">Participants</button>
+      <button type="button" class="secondary" data-mgr-event-tasks="${event.id}">Tasks</button>
     </div>
   </article>`;
 }
@@ -448,6 +461,288 @@ async function loadEventsWorkspace(memberships, generation = state.generation) {
     clubEventsPage.total || 0,
     "manager-events",
   );
+  await loadMyTasks(generation);
+}
+
+function myTaskCard(task) {
+  const options = ["TODO", "IN_PROGRESS", "DONE"]
+    .map(
+      (s) =>
+        `<option value="${s}" ${task.status === s ? "selected" : ""}>${escapeHtml(s)}</option>`,
+    )
+    .join("");
+  const dueText = task.due_at ? ` • Due: ${escapeHtml(new Date(task.due_at).toLocaleString())}` : "";
+  return `<article class="card">
+    <h3>${escapeHtml(task.title)}</h3>
+    <p class="meta">${escapeHtml(task.event_title)} (${escapeHtml(task.club_name)}) • ${escapeHtml(task.status)}${dueText}</p>
+    ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
+    <div class="actions">
+      <select data-my-task-select="${task.id}" aria-label="Task status">${options}</select>
+      <button type="button" class="primary-action" data-my-task-save="${task.id}">Update status</button>
+    </div>
+  </article>`;
+}
+
+function managerTaskCard(task) {
+  const assignee = task.assignee_name ? escapeHtml(task.assignee_name) : "Unassigned";
+  return `<article class="card">
+    <h3>${escapeHtml(task.title)}</h3>
+    <p class="meta">${escapeHtml(task.status)} • Assignee: ${assignee}</p>
+    ${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}
+    <div class="actions">
+      <button type="button" class="secondary" data-mgr-task-edit="${task.id}">Edit / Reassign</button>
+      <button type="button" class="secondary" data-mgr-task-done="${task.id}" ${task.status === "DONE" ? "disabled" : ""}>Mark DONE</button>
+    </div>
+  </article>`;
+}
+
+async function loadMyTasks(generation = state.generation) {
+  const listNode = $("#my-tasks-list");
+  if (!listNode) return;
+  const pageSize = 20;
+  const data = await api(
+    `/api/v1/event-tasks/mine?page=${eventsUiState.myTasksPage}&page_size=${pageSize}`,
+  );
+  if (state.generation !== generation) return;
+  listNode.className = "cards";
+  listNode.innerHTML =
+    data.items && data.items.length
+      ? data.items.map((item) => myTaskCard(item)).join("")
+      : '<p class="empty">No tasks assigned to you yet.</p>';
+  renderPagination(
+    $("#my-tasks-pagination"),
+    data.page || eventsUiState.myTasksPage,
+    data.page_size || pageSize,
+    data.total || 0,
+    "my-tasks",
+  );
+}
+
+function setTaskFormMode(taskItem) {
+  const form = $("#task-create-form");
+  const submitBtn = $("#task-submit-btn");
+  const cancelBtn = $("#task-edit-cancel");
+  eventsUiState.editingTaskId = taskItem ? taskItem.id : null;
+  if (!form) return;
+
+  const setField = (name, value) => {
+    const field = form.elements?.[name] || form.querySelector?.(`[name="${name}"]`);
+    if (field && value !== undefined) field.value = value;
+  };
+  if (!taskItem) {
+    form.reset?.();
+    setField("assignee_membership_id", "");
+    if (submitBtn) submitBtn.textContent = "Create task";
+    cancelBtn?.classList.add("hidden");
+    return;
+  }
+  setField("title", taskItem.title || "");
+  setField("description", taskItem.description || "");
+  setField("due_at", toDatetimeLocalValue(taskItem.due_at));
+  setField(
+    "assignee_membership_id",
+    taskItem.assignee_membership_id ? String(taskItem.assignee_membership_id) : "",
+  );
+  if (submitBtn) submitBtn.textContent = "Save task changes";
+  cancelBtn?.classList.remove("hidden");
+}
+
+async function fetchAllClubMembers(clubId, generation = state.generation) {
+  const pageSize = 100;
+  const membersById = new Map();
+  let page = 1;
+
+  while (true) {
+    const data = await api(`/api/v1/clubs/${clubId}/members?page=${page}&page_size=${pageSize}`);
+    if (state.generation !== generation) return null;
+
+    const items = Array.isArray(data.items) ? data.items : [];
+    for (const member of items) {
+      if (!membersById.has(member.membership_id)) {
+        membersById.set(member.membership_id, member);
+      }
+    }
+
+    const effectivePageSize = Number(data.page_size) || pageSize;
+    const total = Number(data.total ?? items.length);
+    if (items.length === 0 || items.length < effectivePageSize || page * effectivePageSize >= total) {
+      break;
+    }
+    page += 1;
+  }
+
+  return Array.from(membersById.values());
+}
+
+async function loadManagerTaskBoard(eventId, clubId, generation = state.generation) {
+  const panel = $("#manager-tasks-panel");
+  const listNode = $("#manager-tasks-list");
+  const progressNode = $("#manager-task-progress");
+  const assigneeSelect = $("#task-assignee-select");
+  const msgNode = $("#manager-tasks-message");
+  if (!panel || !listNode) return;
+  if (!Number.isInteger(eventId) || eventId <= 0 || !Number.isInteger(clubId) || clubId <= 0) {
+    if (msgNode) message(msgNode, "Event details are unavailable. Please reload.", "error");
+    return;
+  }
+
+  const pageSize = 20;
+  try {
+    const [progress, tasksPage, allMembers] = await Promise.all([
+      api(`/api/v1/events/${eventId}/task-progress`),
+      api(`/api/v1/events/${eventId}/tasks?page=${eventsUiState.mgrTasksPage}&page_size=${pageSize}`),
+      fetchAllClubMembers(clubId, generation),
+    ]);
+    if (state.generation !== generation || allMembers === null) return;
+
+    eventsUiState.tasksEventId = eventId;
+    eventsUiState.tasksClubId = clubId;
+    panel.classList.remove("hidden");
+    const eventItem = eventsUiState.managedEventsById.get(eventId);
+    const titleNode = $("#manager-tasks-event-title");
+    if (titleNode && eventItem) titleNode.textContent = `Task board — ${eventItem.title}`;
+    if (progressNode) {
+      progressNode.textContent = `Total: ${progress.total} | TODO: ${progress.todo} | IN_PROGRESS: ${progress.in_progress} | DONE: ${progress.done} (${progress.completion_percentage}%)`;
+    }
+    if (assigneeSelect) {
+      const currentVal = assigneeSelect.value;
+      const memberOptions = allMembers
+        .map(
+          (m) =>
+            `<option value="${m.membership_id}">${escapeHtml(m.full_name)} (${escapeHtml(m.role)})</option>`,
+        )
+        .join("");
+      assigneeSelect.innerHTML = `<option value="">Unassigned</option>${memberOptions}`;
+      if (currentVal) assigneeSelect.value = currentVal;
+    }
+    const items = tasksPage.items || [];
+    eventsUiState.managedTasksById.clear();
+    items.forEach((t) => eventsUiState.managedTasksById.set(t.id, t));
+    listNode.innerHTML = items.length
+      ? items.map((t) => managerTaskCard(t)).join("")
+      : '<p class="empty">No tasks for this event yet.</p>';
+    renderPagination(
+      $("#manager-tasks-pagination"),
+      tasksPage.page || eventsUiState.mgrTasksPage,
+      tasksPage.page_size || pageSize,
+      tasksPage.total || 0,
+      "manager-tasks",
+    );
+  } catch (error) {
+    if (state.generation === generation && msgNode) message(msgNode, error.message, "error");
+  }
+}
+
+async function submitManagerTask(event) {
+  event.preventDefault();
+  if (!eventsUiState.tasksEventId) return;
+  const generation = state.generation;
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
+  const msgNode = $("#manager-tasks-message");
+  const rawAssignee = String(form.get("assignee_membership_id") || "").trim();
+  const rawDesc = String(form.get("description") || "").trim();
+  const rawDue = String(form.get("due_at") || "").trim();
+  const payload = {
+    title: String(form.get("title") || ""),
+    description: rawDesc || null,
+    due_at: rawDue ? new Date(rawDue).toISOString() : null,
+    assignee_membership_id: rawAssignee ? Number(rawAssignee) : null,
+  };
+  const editingId = eventsUiState.editingTaskId;
+  if (msgNode) message(msgNode, editingId ? "Saving task…" : "Creating task…");
+  try {
+    if (editingId) {
+      await api(`/api/v1/event-tasks/${editingId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await api(`/api/v1/events/${eventsUiState.tasksEventId}/tasks`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    }
+    if (state.generation !== generation) return;
+    setTaskFormMode(null);
+    if (msgNode) message(msgNode, editingId ? "Task updated." : "Task created.", "success");
+    await loadManagerTaskBoard(
+      eventsUiState.tasksEventId,
+      eventsUiState.tasksClubId,
+      generation,
+    );
+    await loadMyTasks(generation);
+  } catch (error) {
+    if (state.generation !== generation) return;
+    if (msgNode) message(msgNode, error.message, "error");
+  }
+}
+
+async function handleMyTaskAction(event) {
+  const saveBtn = event.target.closest("button[data-my-task-save]");
+  if (!saveBtn) return;
+  const taskId = Number(saveBtn.dataset.myTaskSave);
+  const select = document.querySelector(`select[data-my-task-select="${taskId}"]`);
+  const statusValue = select ? select.value : "DONE";
+  const generation = state.generation;
+  const msgNode = $("#my-tasks-message");
+  saveBtn.disabled = true;
+  if (msgNode) message(msgNode, "Updating task status…");
+  try {
+    await api(`/api/v1/event-tasks/${taskId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: statusValue }),
+    });
+    if (state.generation !== generation) return;
+    if (msgNode) message(msgNode, "Task status updated.", "success");
+    await loadMyTasks(generation);
+    if (eventsUiState.tasksEventId) {
+      await loadManagerTaskBoard(
+        eventsUiState.tasksEventId,
+        eventsUiState.tasksClubId,
+        generation,
+      );
+    }
+  } catch (error) {
+    if (state.generation !== generation) return;
+    saveBtn.disabled = false;
+    if (msgNode) message(msgNode, error.message, "error");
+  }
+}
+
+async function handleManagerTaskAction(event) {
+  const editBtn = event.target.closest("button[data-mgr-task-edit]");
+  const doneBtn = event.target.closest("button[data-mgr-task-done]");
+  if (!editBtn && !doneBtn) return;
+  const msgNode = $("#manager-tasks-message");
+  if (editBtn) {
+    const taskItem = eventsUiState.managedTasksById.get(Number(editBtn.dataset.mgrTaskEdit));
+    if (taskItem) {
+      setTaskFormMode(taskItem);
+      if (msgNode) message(msgNode, `Editing task "${taskItem.title}".`);
+    }
+    return;
+  }
+  const generation = state.generation;
+  doneBtn.disabled = true;
+  try {
+    await api(`/api/v1/event-tasks/${doneBtn.dataset.mgrTaskDone}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "DONE" }),
+    });
+    if (state.generation !== generation) return;
+    if (msgNode) message(msgNode, "Task marked DONE.", "success");
+    await loadManagerTaskBoard(
+      eventsUiState.tasksEventId,
+      eventsUiState.tasksClubId,
+      generation,
+    );
+    await loadMyTasks(generation);
+  } catch (error) {
+    if (state.generation !== generation) return;
+    doneBtn.disabled = false;
+    if (msgNode) message(msgNode, error.message, "error");
+  }
 }
 
 async function handleEventAction(event) {
@@ -600,10 +895,25 @@ async function handleManagerEventAction(event) {
   const publishBtn = event.target.closest("button[data-mgr-event-publish]");
   const cancelBtn = event.target.closest("button[data-mgr-event-cancel]");
   const participantsBtn = event.target.closest("button[data-mgr-event-participants]");
-  if (!editBtn && !publishBtn && !cancelBtn && !participantsBtn) return;
+  const tasksBtn = event.target.closest("button[data-mgr-event-tasks]");
+  if (!editBtn && !publishBtn && !cancelBtn && !participantsBtn && !tasksBtn) return;
 
   const generation = state.generation;
   const msgNode = $("#manager-events-message");
+  if (tasksBtn) {
+    const eventId = Number(tasksBtn.dataset.mgrEventTasks);
+    const eventItem = eventsUiState.managedEventsById.get(eventId);
+    if (!Number.isInteger(eventId) || eventId <= 0 || !eventItem) {
+      if (msgNode) {
+        message(msgNode, "Event details are unavailable. Please reload club events.", "error");
+      }
+      return;
+    }
+    eventsUiState.mgrTasksPage = 1;
+    setTaskFormMode(null);
+    await loadManagerTaskBoard(eventId, eventItem.club_id, generation);
+    return;
+  }
   if (editBtn) {
     const eventItem = eventsUiState.managedEventsById.get(Number(editBtn.dataset.mgrEventEdit));
     if (eventItem) {
@@ -656,7 +966,19 @@ async function handlePaginationClick(event) {
   if (scope === "events") eventsUiState.eventsPage = Math.max(1, eventsUiState.eventsPage + delta);
   else if (scope === "my-registrations")
     eventsUiState.myRegsPage = Math.max(1, eventsUiState.myRegsPage + delta);
-  else if (scope === "manager-events")
+  else if (scope === "my-tasks") {
+    eventsUiState.myTasksPage = Math.max(1, eventsUiState.myTasksPage + delta);
+    await loadMyTasks(state.generation);
+    return;
+  } else if (scope === "manager-tasks" && eventsUiState.tasksEventId !== null) {
+    eventsUiState.mgrTasksPage = Math.max(1, eventsUiState.mgrTasksPage + delta);
+    await loadManagerTaskBoard(
+      eventsUiState.tasksEventId,
+      eventsUiState.tasksClubId,
+      state.generation,
+    );
+    return;
+  } else if (scope === "manager-events")
     eventsUiState.mgrEventsPage = Math.max(1, eventsUiState.mgrEventsPage + delta);
   else if (scope === "participants" && eventsUiState.participantsEventId !== null) {
     eventsUiState.participantsPage = Math.max(1, eventsUiState.participantsPage + delta);
@@ -930,6 +1252,12 @@ function initialize() {
   $("#my-registrations-pagination")?.addEventListener("click", handlePaginationClick);
   $("#manager-events-pagination")?.addEventListener("click", handlePaginationClick);
   $("#manager-participants-pagination")?.addEventListener("click", handlePaginationClick);
+  $("#my-tasks-list")?.addEventListener("click", handleMyTaskAction);
+  $("#my-tasks-pagination")?.addEventListener("click", handlePaginationClick);
+  $("#task-create-form")?.addEventListener("submit", submitManagerTask);
+  $("#task-edit-cancel")?.addEventListener("click", () => setTaskFormMode(null));
+  $("#manager-tasks-list")?.addEventListener("click", handleManagerTaskAction);
+  $("#manager-tasks-pagination")?.addEventListener("click", handlePaginationClick);
   $("#password-toggle").addEventListener("click", () =>
     setPasswordVisibility($("#login-password").type === "password"),
   );
@@ -962,4 +1290,10 @@ else
     handlePaginationClick,
     setEventFormMode,
     eventsUiState,
+    loadMyTasks,
+    loadManagerTaskBoard,
+    submitManagerTask,
+    handleMyTaskAction,
+    handleManagerTaskAction,
+    setTaskFormMode,
   };
