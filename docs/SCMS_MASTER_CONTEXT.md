@@ -1,9 +1,9 @@
 # SCMS — MASTER PROJECT CONTEXT & 21-DAY EXECUTION PLAN
 
-> **Source of Truth — Planning baseline v1.1 (Updated for MVP Acceleration)**  
-> Updated: 2026-11-19  
+> **Source of Truth — Planning baseline v1.1 (Updated for MVP Acceleration)**
+> Updated: 2026-11-27
 > Project: **Student Club Management System (SCMS)**  
-> Status: **PR #7 (Day 06 Membership Lifecycle, `ac3cc4d`) merged to `main`; chiến lược phát triển chuyển sang MVP-First + RetailOps Reuse + Production-Grade Correctness.**
+> Status: **PR #10 (Day 08 Event Tasks, `cf4af52`) đã merge vào `main`; Day 09 Gemini AI Read-only Tool Calling đang triển khai trên `feature/day09-gemini-ai` (`2168953`, chờ review & fix findings trước khi PR).**
 > Language for mentoring/reviews: Vietnamese. Code identifiers and technical artifacts: English.
 
 ## 0. HOW AN AI ASSISTANT MUST USE THIS DOCUMENT
@@ -423,7 +423,7 @@ For solo SCMS, main + short-lived feature branches with PRs are sufficient; `dev
 
 ## 11. PROGRESS LOG — UPDATE AFTER EACH DAY
 
-**Current implementation checkpoint (2026-11-19):** Days 01–06 (Foundation, DB Schema/Seed, Quality Gate, Authentication, Club Creation, Membership Lifecycle) are merged into `main` through PR #7 (`ac3cc4d`); consult `docs/progress/DAILY_PROGRESS.md` for executed commands, counts, limitations, and commit history. Prior FastAPI Project Management work remains background, not evidence of SCMS implementation.
+**Current implementation checkpoint (2026-11-27):** Days 01–08 (bao gồm Events & Registration và Day 08 Event Tasks qua PR #10 `cf4af52`) đã nằm trong `main`; Day 09 Gemini AI Read-only Tool Calling đã commit trên `feature/day09-gemini-ai` (`2168953`, `IN PROGRESS — PENDING REVIEW FIXES`). Xem `docs/progress/DAILY_PROGRESS.md` và `docs/progress/DAY09_AI_HANDOFF.md` để biết bằng chứng kiểm thử và các review findings cần xử lý. Prior FastAPI Project Management work remains background, not evidence of SCMS implementation.
 
 Use the template and append one block per completed or paused day:
 

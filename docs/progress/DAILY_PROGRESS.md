@@ -77,3 +77,27 @@
 - Schema / migration changes: None (dùng schema `20261026_01`).
 - Next step: Phase Events & Registration (`feature/day07-events`).
 - Evidence: `backend/app/modules/clubs/authorization.py`, `backend/app/modules/clubs/repository.py`, `backend/app/modules/clubs/service.py`, `backend/app/modules/clubs/router.py`, `backend/tests/test_membership_api.py`, `backend/tests/integration/test_membership_lifecycle.py`, `frontend/js/app.js`, `frontend/js/app.test.js`.
+
+### SCMS Day 07 & Day 08 — MERGED TO `main` (2026-11-26)
+- Ghi chú kiểm chứng lịch sử: Tại thời điểm đồng bộ `main` (`cf4af52`), module Events & Registration (`backend/app/modules/events/`) và Event Tasks (PR #10, merge commit `cf4af52934960670c20f8e9b09c97356a11717a0`) đã được hợp nhất vào `main`. Không tự suy diễn lại số liệu chạy test riêng lẻ của Day 07 vì log chạy trước đó không nằm trong phạm vi xác minh hiện tại; toàn bộ test của Events và Tasks đều nằm trong bộ regression chạy tại mốc Day 09 bên dưới.
+
+### SCMS Day 09 — 2026-11-27 — STATUS: IN PROGRESS (COMMITTED, PENDING REVIEW FIXES)
+- Branch / commit: `feature/day09-gemini-ai` (`2168953`, tách từ `main` tại `cf4af52`).
+- Implemented:
+  - Provider abstraction (`AI_PROVIDER=mock|gemini`) với `MockAIProvider` (demo/offline không cần API key) và `GeminiAIProvider` dùng SDK `google-genai==1.75.0` (fail-closed khi thiếu `GEMINI_API_KEY`).
+  - Allowlist đúng 4 read-only tools (`list_upcoming_events`, `get_my_registrations`, `get_my_tasks`, `get_event_progress`) gọi qua `events/service.py` và `tasks/service.py` bằng danh tính JWT `CurrentUserResponse`.
+  - Shared request-scoped `ToolBudget` (`15s` / `3` calls / `32 KiB` UTF-8) và `ToolContext` capability binding.
+  - Endpoints `POST /api/v1/ai/chat`, `GET /api/v1/ai/conversations`, `GET /api/v1/ai/conversations/{conversation_id}` cùng transaction 3-phase (không giữ DB transaction/connection khi chờ provider).
+  - Minimal frontend AI assistant panel (`frontend/index.html`, `frontend/js/app.js`) escape HTML an toàn qua `escapeHtml()`.
+- Local verification results (2026-11-27, trước khi commit `2168953`):
+  - Ruff lint & format check (16 files AI/CI scope): **PASS** (`All checks passed!`, `16 files already formatted`).
+  - Ordinary tests (`.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider -m "not integration" -q`): **PASS — `250 passed, 68 deselected`**.
+  - Disposable MySQL 8.4.4 integration suite (`.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider -m integration --require-integration-env -q` trên 12 isolated schemas): **PASS — `68 passed, 250 deselected`**.
+  - Frontend JS (`node --check frontend/js/app.js` & `node --test frontend/js/app.test.js`): **PASS — `28 passed, 0 failed`**.
+  - Backend Docker build (`docker build --file Dockerfile --tag scms-backend:day09-verify .`): **PASS** (đã xóa image tạm).
+  - `git diff --check`: **PASS**.
+  - Lưu ý: Gemini live API chưa được test bằng `GEMINI_API_KEY` thật; các test Gemini sử dụng mocked `genai.Client` và `MockAIProvider`.
+- Schema / migration changes: None (dùng 5 bảng AI có sẵn trong `20261026_01`).
+- Open bugs and tech debt: Xem chi tiết 7 review findings (trong đó có P1 `AI-01` về crash/stale lease trên `ai_turns.inflight_guard`) tại `docs/progress/DAY09_AI_HANDOFF.md`.
+- Next step: Xử lý các review findings được Owner duyệt (ưu tiên `AI-01`, `AI-02`), chạy lại regression và mở PR vào `main`.
+- Evidence: `backend/app/modules/ai/`, `backend/tests/test_ai_tool_executor.py`, `backend/tests/test_ai_provider_and_api.py`, `backend/tests/integration/test_ai_assistant.py`, `docs/progress/DAY09_AI_HANDOFF.md`.
