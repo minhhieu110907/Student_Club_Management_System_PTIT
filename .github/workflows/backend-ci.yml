@@ -49,6 +49,11 @@ jobs:
           app/modules/tasks/exceptions.py app/modules/tasks/repository.py
           app/modules/tasks/router.py app/modules/tasks/schemas.py
           app/modules/tasks/service.py
+          app/modules/ai/budget.py app/modules/ai/config.py
+          app/modules/ai/exceptions.py app/modules/ai/provider.py
+          app/modules/ai/repository.py app/modules/ai/router.py
+          app/modules/ai/schemas.py app/modules/ai/service.py
+          app/modules/ai/tool_executor.py
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
@@ -68,6 +73,8 @@ jobs:
           tests/integration/test_events_and_registrations.py
           tests/test_tasks_api.py tests/test_tasks_schemas.py
           tests/integration/test_event_tasks_and_leave.py
+          tests/test_ai_tool_executor.py tests/test_ai_provider_and_api.py
+          tests/integration/test_ai_assistant.py
       - name: Ruff format check
         run: >-
           python -m ruff format --check
@@ -86,6 +93,11 @@ jobs:
           app/modules/tasks/exceptions.py app/modules/tasks/repository.py
           app/modules/tasks/router.py app/modules/tasks/schemas.py
           app/modules/tasks/service.py
+          app/modules/ai/budget.py app/modules/ai/config.py
+          app/modules/ai/exceptions.py app/modules/ai/provider.py
+          app/modules/ai/repository.py app/modules/ai/router.py
+          app/modules/ai/schemas.py app/modules/ai/service.py
+          app/modules/ai/tool_executor.py
           scripts/create_ci_databases.py
           tests/conftest.py tests/test_health.py tests/test_logging.py
           tests/test_exception_handlers.py tests/test_pytest_contract.py
@@ -105,6 +117,8 @@ jobs:
           tests/integration/test_events_and_registrations.py
           tests/test_tasks_api.py tests/test_tasks_schemas.py
           tests/integration/test_event_tasks_and_leave.py
+          tests/test_ai_tool_executor.py tests/test_ai_provider_and_api.py
+          tests/integration/test_ai_assistant.py
       - name: Ordinary tests
         run: python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest -m "not integration" -q
 
@@ -157,7 +171,8 @@ jobs:
             scms_registration_verify \
             scms_club_verify \
             scms_events_verify \
-            scms_tasks_verify
+            scms_tasks_verify \
+            scms_ai_verify
           do
             DATABASE_URL="mysql+pymysql://root:${CI_MYSQL_PASSWORD}@127.0.0.1:3306/${database}" \
               python -m alembic -c alembic.ini upgrade head
@@ -179,6 +194,7 @@ jobs:
           SCMS_CLUB_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_club_verify
           SCMS_EVENTS_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_events_verify
           SCMS_TASKS_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_tasks_verify
+          SCMS_AI_INTEGRATION_URL: mysql+pymysql://root:scms-ci-only-password@127.0.0.1:3306/scms_ai_verify
         run: >-
           python -m pytest -p no:cacheprovider --basetemp=/tmp/pytest
           -m integration --require-integration-env -q

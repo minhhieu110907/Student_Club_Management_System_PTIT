@@ -21,6 +21,8 @@ from app.core.request_context import (
 from app.db.session import DatabaseResources, build_database_resources
 from app.health.router import router as health_router
 from app.health.service import ReadinessService, build_readiness_service
+from app.modules.ai.config import AISettings, build_ai_settings
+from app.modules.ai.router import router as ai_router
 from app.modules.clubs.router import router as clubs_router
 from app.modules.events.router import router as events_router
 from app.modules.identity.auth_config import (
@@ -96,6 +98,7 @@ def create_app(
     authentication_settings_factory: Callable[
         [], AuthenticationSettings | None
     ] = build_authentication_settings,
+    ai_settings_factory: Callable[[], AISettings] = build_ai_settings,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -104,6 +107,7 @@ def create_app(
         try:
             database_resources = database_resources_factory()
             authentication_settings = authentication_settings_factory()
+            ai_settings = ai_settings_factory()
         except BaseException:
             try:
                 if database_resources is not None:
@@ -118,6 +122,7 @@ def create_app(
         application.state.readiness_service = readiness_service
         application.state.database_resources = database_resources
         application.state.authentication_settings = authentication_settings
+        application.state.ai_settings = ai_settings
         try:
             yield
         finally:
@@ -148,6 +153,7 @@ def create_app(
     application.include_router(clubs_router)
     application.include_router(events_router)
     application.include_router(tasks_router)
+    application.include_router(ai_router)
     return application
 
 

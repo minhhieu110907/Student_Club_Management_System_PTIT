@@ -20,6 +20,7 @@ DATABASE_NAMES = (
     "scms_club_verify",
     "scms_events_verify",
     "scms_tasks_verify",
+    "scms_ai_verify",
 )
 
 

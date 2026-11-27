@@ -63,6 +63,11 @@ function installDom() {
     ["#my-registrations-pagination", domNode()],
     ["#events-message", domNode()],
     ["#event-detail-panel", domNode()],
+    ["#ai-chat-form", domNode()],
+    ["#ai-chat-input", { ...domNode(), value: "" }],
+    ["#ai-chat-history", domNode()],
+    ["#ai-chat-message", domNode()],
+    ["#ai-chat-submit", domNode()],
     ["#event-create-form", domNode()],
     ["#event-submit-btn", domNode()],
     ["#event-edit-cancel", domNode()],
@@ -871,4 +876,53 @@ test("handleManagerEventAction loads task board with real club_id when event exi
   assert.ok(requestedUrls.includes("/api/v1/clubs/17/members?page=1&page_size=100"));
   assert.ok(!requestedUrls.some((u) => u.includes("/clubs/1/members")));
   assert.equal(nodes.get("#manager-tasks-event-title").textContent, "Task board — AI Hack");
+});
+
+test("submitAiChat sends prompt to /api/v1/ai/chat and escapes reply HTML", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  auth.aiUiState.conversationId = null;
+  auth.aiUiState.messages = [];
+  nodes.get("#ai-chat-input").value = "What are my tasks?";
+  global.fetch = async (url, options) => {
+    assert.equal(url, "/api/v1/ai/chat");
+    assert.equal(options.method, "POST");
+    return response(200, {
+      conversation_id: 9,
+      turn_id: 1,
+      message_id: 2,
+      provider: "mock",
+      model: "mock-scms-v1",
+      reply: "Tasks <script>alert(1)</script>",
+      tool_calls: [{ tool_name: "get_my_tasks", status: "SUCCEEDED", duration_ms: 2 }],
+    });
+  };
+
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.equal(auth.aiUiState.conversationId, 9);
+  assert.equal(nodes.get("#ai-chat-input").value, "");
+  assert.ok(!nodes.get("#ai-chat-history").innerHTML.includes("<script>"));
+  assert.ok(nodes.get("#ai-chat-history").innerHTML.includes("&lt;script&gt;"));
+});
+
+test("submitAiChat surfaces backend error without falling back to mock", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  auth.aiUiState.conversationId = null;
+  auth.aiUiState.messages = [];
+  nodes.get("#ai-chat-input").value = "What events are coming up?";
+  global.fetch = async () => response(503, { message: "AI service is currently unavailable" });
+
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.equal(nodes.get("#ai-chat-message").textContent, "AI service is currently unavailable");
+  assert.equal(auth.aiUiState.messages.length, 0);
 });

@@ -1232,8 +1232,82 @@ async function logout() {
   message($("#admin-message"), "");
   showSignedOut("Signed out successfully.");
 }
+function renderAiChatHistory() {
+  const container = $("#ai-chat-history");
+  if (!container) return;
+  if (!aiUiState.messages.length) {
+    container.innerHTML = '<p class="empty">Ask a question to start a conversation.</p>';
+    return;
+  }
+  container.innerHTML = aiUiState.messages
+    .map((entry) => {
+      const tools =
+        entry.toolCalls && entry.toolCalls.length
+          ? `<p class="meta">Tools: ${entry.toolCalls.map((t) => escapeHtml(`${t.tool_name} (${t.status})`)).join(", ")}</p>`
+          : "";
+      return `<article class="card">
+        <div class="card-heading">
+          <strong>${escapeHtml(entry.role === "USER" ? "You" : "Assistant")}</strong>
+          ${entry.provider ? `<span class="badge">${escapeHtml(entry.provider)}</span>` : ""}
+        </div>
+        <p>${escapeHtml(entry.content)}</p>
+        ${tools}
+      </article>`;
+    })
+    .join("");
+}
+
+const aiUiState = {
+  conversationId: null,
+  messages: [],
+};
+
+async function submitAiChat(event) {
+  event.preventDefault();
+  const generation = state.generation;
+  const input = $("#ai-chat-input");
+  const submitBtn = $("#ai-chat-submit");
+  const msgNode = $("#ai-chat-message");
+  const rawMessage = input?.value?.trim() || "";
+  if (!rawMessage) {
+    if (msgNode) message(msgNode, "Please enter a question for the assistant.", "error");
+    return;
+  }
+  if (submitBtn) submitBtn.disabled = true;
+  if (msgNode) message(msgNode, "Asking assistant…");
+  try {
+    const result = await api("/api/v1/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: rawMessage,
+        conversation_id: aiUiState.conversationId,
+      }),
+    });
+    if (state.generation !== generation) return;
+    aiUiState.conversationId = result.conversation_id;
+    aiUiState.messages.push(
+      { role: "USER", content: rawMessage, toolCalls: [] },
+      {
+        role: "ASSISTANT",
+        content: result.reply,
+        provider: result.provider,
+        toolCalls: result.tool_calls || [],
+      },
+    );
+    if (input) input.value = "";
+    renderAiChatHistory();
+    if (msgNode) message(msgNode, "");
+  } catch (error) {
+    if (state.generation !== generation) return;
+    if (msgNode) message(msgNode, error.message, "error");
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
 function initialize() {
   $("#login-form").addEventListener("submit", login);
+  $("#ai-chat-form")?.addEventListener("submit", submitAiChat);
   $("#club-request-form").addEventListener("submit", submitClubRequest);
   $("#admin-list").addEventListener("click", reviewClubRequest);
   $("#discovery-list").addEventListener("submit", submitMembershipApplication);
@@ -1296,4 +1370,7 @@ else
     handleMyTaskAction,
     handleManagerTaskAction,
     setTaskFormMode,
+    aiUiState,
+    renderAiChatHistory,
+    submitAiChat,
   };
