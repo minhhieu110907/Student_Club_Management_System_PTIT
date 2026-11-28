@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import threading
-from typing import Iterator
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import sqlalchemy as sa
@@ -12,7 +12,6 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.exc import IntegrityError
 
 from app.db.model_registry import Base
-
 
 DATABASE_URL = os.getenv("SCMS_MYSQL_INTEGRATION_URL")
 pytestmark = [
@@ -134,7 +133,9 @@ def _sql_expression_ast(value: object, *, generated_case: bool = False) -> tuple
                     break
             require(")")
             return ("in", ("identifier", identifier), tuple(values))
-        assert cursor < len(tokens) and tokens[cursor][1] in {"=", "<>", ">", ">=", "<", "<="}, tokens
+        assert cursor < len(tokens) and tokens[cursor][1] in {"=", "<>", ">", ">=", "<", "<="}, (
+            tokens
+        )
         operator = tokens[cursor][1]
         cursor += 1
         assert cursor < len(tokens) and tokens[cursor][0] in {"literal", "number", "word"}, tokens
@@ -187,12 +188,13 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
             row["TABLE_NAME"]
             for row in _rows(
                 connection,
-                "SELECT TABLE_NAME FROM information_schema.TABLES "
-                "WHERE TABLE_SCHEMA = DATABASE()",
+                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()",
             )
         }
         assert tables == set(Base.metadata.tables) | {"alembic_version"}
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "20261026_01"
+        assert (
+            connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "20261128_01"
+        )
 
         table_rows = _rows(
             connection,
@@ -200,11 +202,8 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'alembic_version'",
         )
         assert {
-            (row["TABLE_NAME"], row["ENGINE"], row["TABLE_COLLATION"])
-            for row in table_rows
-        } == {
-            (name, "InnoDB", "utf8mb4_0900_ai_ci") for name in Base.metadata.tables
-        }
+            (row["TABLE_NAME"], row["ENGINE"], row["TABLE_COLLATION"]) for row in table_rows
+        } == {(name, "InnoDB", "utf8mb4_0900_ai_ci") for name in Base.metadata.tables}
 
         column_rows = _rows(
             connection,
@@ -225,7 +224,9 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
             for column in table.columns:
                 row = actual_columns[(table.name, column.name)]
                 expected_type = column.type.compile(dialect=dialect)
-                collation_match = re.search(r"\s+collate\s+([A-Za-z0-9_]+)$", expected_type, re.IGNORECASE)
+                collation_match = re.search(
+                    r"\s+collate\s+([A-Za-z0-9_]+)$", expected_type, re.IGNORECASE
+                )
                 if collation_match is not None:
                     expected_collation = collation_match.group(1)
                     expected_type = expected_type[: collation_match.start()]
@@ -233,7 +234,9 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
                     expected_collation = table.dialect_options["mysql"]["collate"]
                 else:
                     expected_collation = None
-                assert _normalized_mysql_type(row["COLUMN_TYPE"]) == _normalized_mysql_type(expected_type)
+                assert _normalized_mysql_type(row["COLUMN_TYPE"]) == _normalized_mysql_type(
+                    expected_type
+                )
                 assert row["COLLATION_NAME"] == expected_collation
                 assert (row["IS_NULLABLE"] == "YES") == column.nullable
                 if column.server_default is None or column.computed is not None:
@@ -243,9 +246,9 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
                 if column.computed is not None:
                     generated_count += 1
                     assert "STORED GENERATED" in str(row["EXTRA"]).upper()
-                    assert _generated_expression_ast(row["GENERATION_EXPRESSION"]) == _generated_expression_ast(
-                        column.computed.sqltext
-                    )
+                    assert _generated_expression_ast(
+                        row["GENERATION_EXPRESSION"]
+                    ) == _generated_expression_ast(column.computed.sqltext)
         assert generated_count == 5
 
         fk_rows = _rows(
@@ -263,10 +266,17 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
             key = (str(row["TABLE_NAME"]), str(row["CONSTRAINT_NAME"]))
             item = actual_fks.setdefault(
                 key,
-                {"columns": [], "targets": [], "onupdate": row["UPDATE_RULE"], "ondelete": row["DELETE_RULE"]},
+                {
+                    "columns": [],
+                    "targets": [],
+                    "onupdate": row["UPDATE_RULE"],
+                    "ondelete": row["DELETE_RULE"],
+                },
             )
             item["columns"].append(row["COLUMN_NAME"])
-            item["targets"].append(f"{row['REFERENCED_TABLE_NAME']}.{row['REFERENCED_COLUMN_NAME']}")
+            item["targets"].append(
+                f"{row['REFERENCED_TABLE_NAME']}.{row['REFERENCED_COLUMN_NAME']}"
+            )
         expected_fks = {
             (table.name, fk.name): {
                 "columns": list(fk.column_keys),
@@ -333,7 +343,10 @@ def test_live_schema_matches_metadata_contract(engine: sa.Engine) -> None:
             columns.append(str(row["COLUMN_NAME"]))
         expected_indexes: dict[tuple[str, str], tuple[bool, list[str]]] = {}
         for table in Base.metadata.tables.values():
-            expected_indexes[(table.name, "PRIMARY")] = (True, [column.name for column in table.primary_key.columns])
+            expected_indexes[(table.name, "PRIMARY")] = (
+                True,
+                [column.name for column in table.primary_key.columns],
+            )
             for constraint in table.constraints:
                 if isinstance(constraint, sa.UniqueConstraint):
                     expected_indexes[(table.name, str(constraint.name))] = (
@@ -590,7 +603,11 @@ def test_all_composite_foreign_keys_reject_mismatched_identity(engine: sa.Engine
                 "(id, conversation_id, client_request_key, payload_hash, turn_no, created_at) "
                 "VALUES (20901, 20801, :request_key, :payload_hash, 1, :now)"
             ),
-            {"request_key": bytes.fromhex("21" * 16), "payload_hash": bytes.fromhex("22" * 32), "now": now},
+            {
+                "request_key": bytes.fromhex("21" * 16),
+                "payload_hash": bytes.fromhex("22" * 32),
+                "now": now,
+            },
         )
         _expect_rejected(
             connection,
@@ -731,18 +748,27 @@ def test_all_generated_guards_compute_active_and_inactive_states(engine: sa.Engi
         )
 
         assert connection.execute(
-            sa.text("SELECT id, pending_guard FROM membership_applications WHERE id IN (40401, 40402) ORDER BY id")
+            sa.text(
+                "SELECT id, pending_guard FROM membership_applications WHERE id IN (40401, 40402) ORDER BY id"
+            )
         ).all() == [(40401, 1), (40402, None)]
         assert connection.execute(
-            sa.text("SELECT id, active_guard FROM club_memberships WHERE id IN (40501, 40502) ORDER BY id")
+            sa.text(
+                "SELECT id, active_guard FROM club_memberships WHERE id IN (40501, 40502) ORDER BY id"
+            )
         ).all() == [(40501, 1), (40502, None)]
         assert connection.execute(
-            sa.text("SELECT id, active_guard FROM event_registrations WHERE id IN (40701, 40702) ORDER BY id")
+            sa.text(
+                "SELECT id, active_guard FROM event_registrations WHERE id IN (40701, 40702) ORDER BY id"
+            )
         ).all() == [(40701, 1), (40702, None)]
         assert connection.execute(
-            sa.text("SELECT id, current_guard FROM refresh_tokens WHERE id IN (40801, 40802) ORDER BY id")
+            sa.text(
+                "SELECT id, current_guard FROM refresh_tokens WHERE id IN (40801, 40802) ORDER BY id"
+            )
         ).all() == [(40801, 1), (40802, None)]
         assert connection.execute(
-            sa.text("SELECT id, inflight_guard FROM ai_turns WHERE id IN (40911, 40912) ORDER BY id")
+            sa.text(
+                "SELECT id, inflight_guard FROM ai_turns WHERE id IN (40911, 40912) ORDER BY id"
+            )
         ).all() == [(40911, 1), (40912, None)]
-

@@ -338,6 +338,35 @@
                 </div>
                 <p id="manager-events-message" class="message" aria-live="polite"></p>
               </section>
+
+              <section id="ai-assistant-panel" class="panel full-width-panel">
+                <div class="section-heading">
+                  <h2>SCMS Assistant (Read-only AI)</h2>
+                  <p>Ask about upcoming events, your registrations, your tasks, or event progress.</p>
+                </div>
+                <div id="ai-chat-history" class="cards" aria-live="polite">
+                  <p class="empty">Ask a question to start a conversation.</p>
+                </div>
+                <form id="ai-chat-form" class="form-grid">
+                  <label class="full-span">
+                    Question
+                    <input
+                      id="ai-chat-input"
+                      name="message"
+                      type="text"
+                      maxlength="4000"
+                      required
+                      placeholder="e.g. What upcoming events are open or what are my tasks?"
+                    />
+                  </label>
+                  <div class="actions full-span">
+                    <button id="ai-chat-submit" type="submit" class="primary-action">
+                      Ask assistant
+                    </button>
+                  </div>
+                </form>
+                <p id="ai-chat-message" class="message" aria-live="polite"></p>
+              </section>
             </div>
           </div>
         </div>

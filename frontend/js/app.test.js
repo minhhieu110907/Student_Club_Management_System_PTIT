@@ -63,6 +63,11 @@ function installDom() {
     ["#my-registrations-pagination", domNode()],
     ["#events-message", domNode()],
     ["#event-detail-panel", domNode()],
+    ["#ai-chat-form", domNode()],
+    ["#ai-chat-input", { ...domNode(), value: "" }],
+    ["#ai-chat-history", domNode()],
+    ["#ai-chat-message", domNode()],
+    ["#ai-chat-submit", domNode()],
     ["#event-create-form", domNode()],
     ["#event-submit-btn", domNode()],
     ["#event-edit-cancel", domNode()],
@@ -871,4 +876,172 @@ test("handleManagerEventAction loads task board with real club_id when event exi
   assert.ok(requestedUrls.includes("/api/v1/clubs/17/members?page=1&page_size=100"));
   assert.ok(!requestedUrls.some((u) => u.includes("/clubs/1/members")));
   assert.equal(nodes.get("#manager-tasks-event-title").textContent, "Task board — AI Hack");
+});
+
+test("submitAiChat sends prompt to /api/v1/ai/chat and escapes reply HTML", async () => {
+  const nodes = installDom();
+  global.document.createElement = () => ({
+    _text: "",
+    set textContent(value) {
+      this._text = String(value);
+    },
+    get innerHTML() {
+      return this._text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    },
+  });
+  auth.replaceSession("valid-token");
+  auth.aiUiState.conversationId = null;
+  auth.aiUiState.messages = [];
+  nodes.get("#ai-chat-input").value = "What are my tasks?";
+  global.fetch = async (url, options) => {
+    assert.equal(url, "/api/v1/ai/chat");
+    assert.equal(options.method, "POST");
+    return response(200, {
+      conversation_id: 9,
+      turn_id: 1,
+      message_id: 2,
+      provider: "mock",
+      model: "mock-scms-v1",
+      reply: "Tasks <script>alert(1)</script>",
+      tool_calls: [{ tool_name: "get_my_tasks", status: "SUCCEEDED", duration_ms: 2 }],
+    });
+  };
+
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.equal(auth.aiUiState.conversationId, 9);
+  assert.equal(nodes.get("#ai-chat-input").value, "");
+  assert.ok(!nodes.get("#ai-chat-history").innerHTML.includes("<script>"));
+  assert.ok(nodes.get("#ai-chat-history").innerHTML.includes("&lt;script&gt;"));
+});
+
+test("submitAiChat surfaces backend error without falling back to mock", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  auth.aiUiState.conversationId = null;
+  auth.aiUiState.messages = [];
+  nodes.get("#ai-chat-input").value = "What events are coming up?";
+  global.fetch = async () => response(503, { message: "AI service is currently unavailable" });
+
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.equal(nodes.get("#ai-chat-message").textContent, "AI service is currently unavailable");
+  assert.equal(auth.aiUiState.messages.length, 0);
+});
+
+test("submitAiChat keeps key on network error, generic HTTP 500/502(non-JSON)/503, and AI_TURN_IN_PROGRESS; rotates only on terminal outcomes", async () => {
+  const nodes = installDom();
+  auth.replaceSession("valid-token");
+  auth.aiUiState.conversationId = 12;
+  nodes.get("#ai-chat-input").value = "Retry question";
+  const sentPayloads = [];
+  let step = 0;
+  global.fetch = async (_url, options) => {
+    step += 1;
+    sentPayloads.push(JSON.parse(options.body));
+    if (step === 1) throw new TypeError("NetworkError when attempting to fetch resource");
+    if (step === 2) return response(500, { message: "Internal Server Error" });
+    if (step === 3) {
+      return {
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON");
+        },
+      };
+    }
+    if (step === 4) return response(503, { message: "Bad Gateway / Upstream Unavailable" });
+    if (step === 5) {
+      return response(409, {
+        error_code: "AI_TURN_IN_PROGRESS",
+        message: "AI turn is already in progress for this request key",
+      });
+    }
+    if (step === 6) {
+      return response(503, {
+        error_code: "AI_TURN_OUTCOME_UNCONFIRMED",
+        message: "AI turn outcome could not be confirmed; retry safely with the same request key",
+      });
+    }
+    if (step === 7) {
+      return response(503, {
+        error_code: "AI_PROVIDER_UNAVAILABLE",
+        message: "AI service is currently unavailable",
+      });
+    }
+    if (step === 8) {
+      return response(409, {
+        error_code: "AI_IDEMPOTENCY_KEY_REUSED",
+        message: "Idempotency key reused with a different request payload",
+      });
+    }
+    return response(200, {
+      conversation_id: 12,
+      turn_id: 2,
+      message_id: 3,
+      provider: "mock",
+      model: "mock-scms-v1",
+      reply: "Recovered",
+      tool_calls: [],
+    });
+  };
+
+  // 1..6: Network error, generic 500, non-JSON 502, generic 503, AI_TURN_IN_PROGRESS, AI_TURN_OUTCOME_UNCONFIRMED -> keep key/msg/convId
+  for (let i = 0; i < 7; i += 1) {
+    await auth.submitAiChat({ preventDefault() {} });
+  }
+  const initialKey = sentPayloads[0].client_request_key;
+  assert.ok(initialKey);
+  for (let i = 1; i < 7; i += 1) {
+    assert.equal(sentPayloads[i].client_request_key, initialKey);
+    assert.equal(sentPayloads[i].message, "Retry question");
+    assert.equal(sentPayloads[i].conversation_id, 12);
+  }
+  // After step 7 (AI_PROVIDER_UNAVAILABLE terminal failure), pendingKey is cleared
+  assert.equal(auth.aiUiState.pendingKey, null);
+
+  // 8: Explicit retry gets a new key; AI_IDEMPOTENCY_KEY_REUSED clears key without reusing old key
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.notEqual(sentPayloads[7].client_request_key, initialKey);
+  assert.equal(auth.aiUiState.pendingKey, null);
+  assert.equal(
+    nodes.get("#ai-chat-message").textContent,
+    "Idempotency key reused with a different request payload",
+  );
+
+  // 9: Success gets a fresh key and clears pending state
+  await auth.submitAiChat({ preventDefault() {} });
+  assert.notEqual(sentPayloads[8].client_request_key, sentPayloads[7].client_request_key);
+  assert.equal(auth.aiUiState.pendingKey, null);
+});
+
+test("invalidateSession resets AI state and blocks delayed AI response from old session", async () => {
+  const nodes = installDom();
+  auth.replaceSession("user-a-token");
+  auth.aiUiState.conversationId = 77;
+  auth.aiUiState.messages = [{ role: "USER", content: "Secret A", toolCalls: [] }];
+  nodes.get("#ai-chat-input").value = "Pending A";
+  const delayed = deferred();
+  global.fetch = async () => delayed.promise;
+
+  const pendingSubmit = auth.submitAiChat({ preventDefault() {} });
+  auth.invalidateSession();
+  assert.equal(auth.aiUiState.conversationId, null);
+  assert.equal(auth.aiUiState.messages.length, 0);
+  assert.equal(nodes.get("#ai-chat-input").value, "");
+  assert.ok(nodes.get("#ai-chat-history").innerHTML.includes("Ask a question"));
+
+  auth.replaceSession("user-b-token");
+  delayed.resolve(
+    response(200, {
+      conversation_id: 77,
+      turn_id: 5,
+      message_id: 6,
+      provider: "mock",
+      model: "mock-scms-v1",
+      reply: "Leaked A reply",
+      tool_calls: [],
+    }),
+  );
+  await pendingSubmit;
+  assert.equal(auth.aiUiState.conversationId, null);
+  assert.equal(auth.aiUiState.messages.length, 0);
 });

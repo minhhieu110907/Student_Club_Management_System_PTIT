@@ -1,0 +1,745 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import time
+import uuid
+from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import NoReturn
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.exceptions import AppException
+from app.modules.ai.config import AISettings
+from app.modules.ai.exceptions import (
+    AIConversationConflictError,
+    AIConversationNotFoundError,
+    AIIdempotencyKeyReusedError,
+    AIProviderTimeoutError,
+    AIProviderUnavailableError,
+    AIToolBudgetExceededError,
+    AIToolValidationError,
+    AITurnInProgressError,
+    AITurnOutcomeUnconfirmedError,
+)
+from app.modules.ai.models import AIConversation, AIMessage, AIToolExecution, AITurn, AIUsageRecord
+from app.modules.ai.provider import AIProvider, build_ai_provider
+from app.modules.ai.repository import (
+    add_message,
+    add_tool_executions,
+    add_turn,
+    add_usage_record,
+    claim_turn_completion,
+    club_exists,
+    create_conversation,
+    get_assistant_message_for_turn,
+    get_conversation_by_create_key_for_update,
+    get_inflight_turn_for_update,
+    get_owned_conversation,
+    get_owned_conversation_for_update,
+    get_turn_by_id,
+    get_turn_by_request_key,
+    get_usage_record_for_turn,
+    list_conversation_messages,
+    list_owned_conversations,
+    list_tool_executions_for_turn,
+)
+from app.modules.ai.schemas import (
+    AIChatRequest,
+    AIChatResponse,
+    AIConversationDetailResponse,
+    AIConversationListResponse,
+    AIConversationSummary,
+    AIMessageItem,
+    AIToolTraceItem,
+)
+from app.modules.ai.tool_executor import (
+    BoundToolRequest,
+    ToolExecutionTrace,
+    bind_authenticated_request,
+)
+from app.modules.identity.schemas import CurrentUserResponse
+
+logger = logging.getLogger(__name__)
+
+_RETENTION_DAYS = 90
+_HISTORY_LIMIT = 10
+_LEASE_SAFETY_MARGIN_SECONDS = 15.0
+
+
+class FailurePersistenceStatus(StrEnum):
+    PERSISTED = "PERSISTED"
+    SUPERSEDED = "SUPERSEDED"
+    UNCONFIRMED = "UNCONFIRMED"
+
+
+@dataclass(frozen=True, slots=True)
+class FailurePersistenceResult:
+    status: FailurePersistenceStatus
+    observed_turn: AITurn | None = None
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _compute_payload_hash(*, prompt: str, club_context_id: int | None) -> bytes:
+    canonical = json.dumps(
+        {"club_context_id": club_context_id, "message": prompt},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).digest()
+
+
+def _default_tool_session_factory(
+    session: Session,
+) -> Callable[[], AbstractContextManager[Session]]:
+    bind = session.get_bind()
+    factory = sessionmaker(bind=bind, expire_on_commit=False)
+
+    @contextmanager
+    def _open_session():
+        tool_session = factory()
+        try:
+            yield tool_session
+        finally:
+            tool_session.close()
+
+    return _open_session
+
+
+def _build_cached_turn_response(session: Session, *, turn: AITurn) -> AIChatResponse:
+    assistant_message = get_assistant_message_for_turn(session, turn_id=turn.id)
+    usage_record = get_usage_record_for_turn(session, turn_id=turn.id)
+    executions = list_tool_executions_for_turn(session, turn_id=turn.id)
+    if assistant_message is None or usage_record is None:
+        raise AIConversationConflictError("AI turn result is unavailable for replay")
+
+    return AIChatResponse(
+        conversation_id=turn.conversation_id,
+        turn_id=turn.id,
+        message_id=assistant_message.id,
+        provider=usage_record.provider,
+        model=usage_record.model,
+        reply=assistant_message.content or "",
+        tool_calls=[
+            AIToolTraceItem(
+                tool_name=item.tool_name,
+                status=item.status,
+                duration_ms=item.duration_ms,
+            )
+            for item in executions
+        ],
+        data_retrieved_at=assistant_message.data_retrieved_at,
+    )
+
+
+def _raise_saved_turn_failure(error_code: str | None) -> None:
+    if error_code in {"AI_PROVIDER_TIMEOUT", "AI_TURN_LEASE_EXPIRED"}:
+        raise AIProviderTimeoutError("AI request exceeded execution time budget")
+    if error_code == "AI_TOOL_BUDGET_EXCEEDED":
+        raise AIToolBudgetExceededError("AI tool execution budget exceeded")
+    if error_code == "AI_TOOL_VALIDATION_ERROR":
+        raise AIToolValidationError("Invalid AI tool request")
+    raise AIProviderUnavailableError("AI service is currently unavailable")
+
+
+def _resolve_existing_turn(
+    session: Session,
+    *,
+    existing_turn: AITurn,
+    payload_hash: bytes,
+) -> AIChatResponse:
+    if existing_turn.payload_hash != payload_hash:
+        raise AIIdempotencyKeyReusedError()
+    if existing_turn.status == "SUCCEEDED":
+        return _build_cached_turn_response(session, turn=existing_turn)
+    if existing_turn.status in {"PENDING", "RUNNING"}:
+        raise AITurnInProgressError()
+    _raise_saved_turn_failure(existing_turn.error_code)
+    raise AIProviderUnavailableError("AI service is currently unavailable")
+
+
+def _recover_stale_inflight_turn(
+    session: Session,
+    *,
+    conversation_id: int,
+    now: datetime,
+    request_key_bytes: bytes | None,
+    payload_hash: bytes,
+) -> None:
+    inflight = get_inflight_turn_for_update(session, conversation_id=conversation_id)
+    if inflight is None:
+        return
+
+    if inflight.lease_expires_at is not None and inflight.lease_expires_at <= now:
+        inflight.status = "FAILED"
+        inflight.error_code = "AI_TURN_LEASE_EXPIRED"
+        inflight.finished_at = now
+        inflight.lease_generation = inflight.lease_generation + 1
+        usage = get_usage_record_for_turn(session, turn_id=inflight.id)
+        if usage is not None and usage.status == "PENDING":
+            usage.status = "TIMEOUT"
+            usage.error_code = "AI_TURN_LEASE_EXPIRED"
+            usage.finished_at = now
+        session.flush()
+        return
+
+    if request_key_bytes is not None and inflight.client_request_key == request_key_bytes:
+        _resolve_existing_turn(session, existing_turn=inflight, payload_hash=payload_hash)
+    raise AIConversationConflictError()
+
+
+def chat_with_assistant(
+    payload: AIChatRequest,
+    user: CurrentUserResponse,
+    session: Session,
+    *,
+    settings: AISettings,
+    request_id: str,
+    provider: AIProvider | None = None,
+    tool_session_factory: Callable[[], AbstractContextManager[Session]] | None = None,
+) -> AIChatResponse:
+    now = _utcnow()
+    purge_after = now + timedelta(days=_RETENTION_DAYS)
+    prompt = payload.message.strip()
+    payload_hash = _compute_payload_hash(prompt=prompt, club_context_id=payload.club_context_id)
+    explicit_key_bytes = payload.client_request_key.bytes if payload.client_request_key else None
+    request_key_bytes = explicit_key_bytes or uuid.uuid4().bytes
+
+    if payload.club_context_id is not None and not club_exists(session, payload.club_context_id):
+        raise AppException("Club was not found", status_code=404, error_code="CLUB_NOT_FOUND")
+
+    conversation: AIConversation | None = None
+    history: list[tuple[str, str]] = []
+
+    if payload.conversation_id is None:
+        if explicit_key_bytes is not None:
+            conversation = get_conversation_by_create_key_for_update(
+                session,
+                owner_user_id=user.id,
+                create_request_key=explicit_key_bytes,
+            )
+        if conversation is None:
+            try:
+                conversation = create_conversation(
+                    session,
+                    owner_user_id=user.id,
+                    create_request_key=explicit_key_bytes,
+                    title=prompt[:120],
+                    club_context_id=payload.club_context_id,
+                    now=now,
+                    purge_after=purge_after,
+                )
+            except IntegrityError as exc:
+                session.rollback()
+                if explicit_key_bytes is None:
+                    raise AIConversationConflictError() from exc
+                conversation = get_conversation_by_create_key_for_update(
+                    session,
+                    owner_user_id=user.id,
+                    create_request_key=explicit_key_bytes,
+                )
+                if conversation is None:
+                    raise AIConversationConflictError() from exc
+    else:
+        conversation = get_owned_conversation_for_update(
+            session,
+            conversation_id=payload.conversation_id,
+            owner_user_id=user.id,
+        )
+        if conversation is None:
+            raise AIConversationNotFoundError()
+
+    if payload.conversation_id is not None or explicit_key_bytes is not None:
+        _recover_stale_inflight_turn(
+            session,
+            conversation_id=conversation.id,
+            now=now,
+            request_key_bytes=explicit_key_bytes,
+            payload_hash=payload_hash,
+        )
+
+        if explicit_key_bytes is not None:
+            existing_turn = get_turn_by_request_key(
+                session,
+                conversation_id=conversation.id,
+                client_request_key=explicit_key_bytes,
+            )
+            if existing_turn is not None:
+                return _resolve_existing_turn(
+                    session,
+                    existing_turn=existing_turn,
+                    payload_hash=payload_hash,
+                )
+
+    if payload.conversation_id is not None:
+        past_messages = list_conversation_messages(
+            session,
+            conversation_id=conversation.id,
+            limit=_HISTORY_LIMIT,
+        )
+        history = [(item.role, item.content or "") for item in past_messages if item.content]
+
+    turn_no = conversation.next_turn_no
+    conversation.next_turn_no = turn_no + 1
+    conversation.updated_at = now
+    lease_expires_at = now + timedelta(
+        seconds=settings.request_deadline_seconds + _LEASE_SAFETY_MARGIN_SECONDS
+    )
+
+    turn = AITurn(
+        conversation_id=conversation.id,
+        client_request_key=request_key_bytes,
+        payload_hash=payload_hash,
+        turn_no=turn_no,
+        status="RUNNING",
+        lease_generation=1,
+        lease_expires_at=lease_expires_at,
+        created_at=now,
+    )
+    try:
+        add_turn(session, turn)
+    except IntegrityError as exc:
+        session.rollback()
+        if payload.conversation_id is not None and explicit_key_bytes is not None:
+            existing_turn = get_turn_by_request_key(
+                session,
+                conversation_id=payload.conversation_id,
+                client_request_key=explicit_key_bytes,
+            )
+            if existing_turn is not None:
+                return _resolve_existing_turn(
+                    session,
+                    existing_turn=existing_turn,
+                    payload_hash=payload_hash,
+                )
+        raise AIConversationConflictError() from exc
+
+    add_message(
+        session,
+        AIMessage(
+            conversation_id=conversation.id,
+            turn_id=turn.id,
+            role="USER",
+            status="SUCCEEDED",
+            content=prompt,
+            created_at=now,
+            updated_at=now,
+        ),
+    )
+    model_name = settings.gemini_model if settings.provider == "gemini" else "mock-scms-v1"
+    usage_record = add_usage_record(
+        session,
+        AIUsageRecord(
+            turn_id=turn.id,
+            attempt_no=1,
+            provider=settings.provider,
+            model=model_name,
+            status="PENDING",
+            usage_source="UNKNOWN",
+            created_at=now,
+            purge_after=purge_after,
+        ),
+    )
+
+    turn_id = turn.id
+    conversation_id = conversation.id
+    usage_id = usage_record.id
+    expected_generation = turn.lease_generation
+    session.commit()
+
+    bound_request: BoundToolRequest | None = None
+    lease_superseded = False
+    started = time.monotonic()
+    try:
+        resolved_provider = provider or build_ai_provider(settings)
+        resolved_factory = tool_session_factory or _default_tool_session_factory(session)
+        bound_request = bind_authenticated_request(
+            user,
+            request_id=request_id,
+            settings=settings,
+            session_factory=resolved_factory,
+        )
+        ai_result = resolved_provider.generate_reply(
+            prompt=prompt,
+            history=history,
+            bound_request=bound_request,
+        )
+
+        duration_ms = max(0, round((time.monotonic() - started) * 1000))
+        finished_at = _utcnow()
+        traces = bound_request.executor.traces
+
+        claimed = claim_turn_completion(
+            session,
+            turn_id=turn_id,
+            expected_generation=expected_generation,
+            new_status="SUCCEEDED",
+            finished_at=finished_at,
+        )
+        if not claimed:
+            lease_superseded = True
+            session.rollback()
+            raise AIConversationConflictError("AI turn lease expired and was superseded")
+
+        persisted_usage = session.get(AIUsageRecord, usage_id)
+        if persisted_usage is not None:
+            persisted_usage.status = "SUCCEEDED"
+            persisted_usage.provider = ai_result.provider
+            persisted_usage.model = ai_result.model
+            persisted_usage.provider_request_id = ai_result.provider_request_id
+            persisted_usage.input_tokens = ai_result.input_tokens
+            persisted_usage.output_tokens = ai_result.output_tokens
+            persisted_usage.usage_source = (
+                "PROVIDER" if ai_result.input_tokens is not None else "UNKNOWN"
+            )
+            persisted_usage.duration_ms = duration_ms
+            persisted_usage.finished_at = finished_at
+
+        assistant_message = add_message(
+            session,
+            AIMessage(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                role="ASSISTANT",
+                status="SUCCEEDED",
+                content=ai_result.reply,
+                source_refs=[trace.tool_name for trace in traces if trace.status == "SUCCEEDED"]
+                or None,
+                data_retrieved_at=finished_at if traces else None,
+                created_at=finished_at,
+                updated_at=finished_at,
+            ),
+        )
+        add_tool_executions(
+            session,
+            _build_tool_execution_rows(
+                turn_id=turn_id,
+                usage_id=usage_id,
+                traces=traces,
+                finished_at=finished_at,
+            ),
+        )
+        session.commit()
+    except AppException as exc:
+        if not lease_superseded:
+            duration_ms = max(0, round((time.monotonic() - started) * 1000))
+            persistence_result = _record_turn_failure_safely(
+                session,
+                turn_id=turn_id,
+                usage_id=usage_id,
+                expected_generation=expected_generation,
+                error_code=exc.error_code,
+                is_timeout=isinstance(exc, AIProviderTimeoutError),
+                duration_ms=duration_ms,
+                traces=bound_request.executor.traces if bound_request is not None else (),
+            )
+            return _resolve_failure_outcome(
+                session,
+                result=persistence_result,
+                payload_hash=payload_hash,
+                original_exc=exc,
+            )
+        raise
+    except Exception as exc:
+        duration_ms = max(0, round((time.monotonic() - started) * 1000))
+        logger.error(
+            "ai_turn_unexpected_failure",
+            extra={
+                "request_id": request_id,
+                "turn_id": turn_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        persistence_result = _record_turn_failure_safely(
+            session,
+            turn_id=turn_id,
+            usage_id=usage_id,
+            expected_generation=expected_generation,
+            error_code="AI_INTERNAL_ERROR",
+            is_timeout=False,
+            duration_ms=duration_ms,
+            traces=bound_request.executor.traces if bound_request is not None else (),
+        )
+        return _resolve_failure_outcome(
+            session,
+            result=persistence_result,
+            payload_hash=payload_hash,
+            original_exc=exc,
+        )
+
+    return AIChatResponse(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        message_id=assistant_message.id,
+        provider=ai_result.provider,
+        model=ai_result.model,
+        reply=ai_result.reply,
+        tool_calls=[
+            AIToolTraceItem(
+                tool_name=trace.tool_name,
+                status=trace.status,
+                duration_ms=trace.duration_ms,
+            )
+            for trace in traces
+        ],
+        data_retrieved_at=assistant_message.data_retrieved_at,
+    )
+
+
+def _rollback_safely(session: Session, *, turn_id: int) -> bool:
+    try:
+        session.rollback()
+        return True
+    except Exception as rollback_exc:
+        logger.warning(
+            "ai_turn_rollback_failed",
+            extra={
+                "turn_id": turn_id,
+                "error_type": type(rollback_exc).__name__,
+            },
+        )
+        return False
+
+
+def _read_turn_after_rollback(session: Session, *, turn_id: int) -> AITurn | None:
+    if getattr(session, "is_active", True) is False:
+        bind = getattr(session, "get_bind", lambda: None)()
+        if bind is None:
+            return None
+        try:
+            read_session = sessionmaker(bind=bind, expire_on_commit=False)()
+            try:
+                return get_turn_by_id(read_session, turn_id=turn_id)
+            finally:
+                read_session.close()
+        except Exception as read_exc:
+            logger.warning(
+                "ai_turn_readback_failed",
+                extra={
+                    "turn_id": turn_id,
+                    "error_type": type(read_exc).__name__,
+                },
+            )
+            return None
+
+    try:
+        return get_turn_by_id(session, turn_id=turn_id)
+    except Exception as read_exc:
+        logger.warning(
+            "ai_turn_readback_failed",
+            extra={
+                "turn_id": turn_id,
+                "error_type": type(read_exc).__name__,
+            },
+        )
+        return None
+
+
+def _classify_observed_turn(
+    observed: AITurn | None,
+    *,
+    expected_generation: int,
+) -> FailurePersistenceResult:
+    if observed is None:
+        return FailurePersistenceResult(
+            status=FailurePersistenceStatus.UNCONFIRMED,
+            observed_turn=None,
+        )
+    if observed.status == "SUCCEEDED":
+        return FailurePersistenceResult(
+            status=FailurePersistenceStatus.SUPERSEDED,
+            observed_turn=observed,
+        )
+    if observed.status == "FAILED":
+        status = (
+            FailurePersistenceStatus.PERSISTED
+            if observed.lease_generation == expected_generation
+            else FailurePersistenceStatus.SUPERSEDED
+        )
+        return FailurePersistenceResult(status=status, observed_turn=observed)
+    return FailurePersistenceResult(
+        status=FailurePersistenceStatus.UNCONFIRMED,
+        observed_turn=observed,
+    )
+
+
+def _raise_unconfirmed_outcome(original_exc: Exception) -> NoReturn:
+    raise AITurnOutcomeUnconfirmedError() from original_exc
+
+
+def _resolve_failure_outcome(
+    session: Session,
+    *,
+    result: FailurePersistenceResult,
+    payload_hash: bytes,
+    original_exc: Exception,
+) -> AIChatResponse:
+    if result.status == FailurePersistenceStatus.PERSISTED:
+        if isinstance(original_exc, AppException):
+            raise original_exc
+        raise AIProviderUnavailableError(
+            "AI service encountered an unexpected error"
+        ) from original_exc
+
+    if result.status == FailurePersistenceStatus.SUPERSEDED:
+        observed = result.observed_turn
+        if observed is not None and observed.status == "SUCCEEDED":
+            if observed.payload_hash != payload_hash:
+                raise AIIdempotencyKeyReusedError() from original_exc
+            return _build_cached_turn_response(session, turn=observed)
+        if observed is not None and observed.status == "FAILED":
+            _raise_saved_turn_failure(observed.error_code)
+
+    _raise_unconfirmed_outcome(original_exc)
+
+
+def _record_turn_failure_safely(
+    session: Session,
+    *,
+    turn_id: int,
+    usage_id: int,
+    expected_generation: int,
+    error_code: str,
+    is_timeout: bool,
+    duration_ms: int,
+    traces: tuple[ToolExecutionTrace, ...],
+) -> FailurePersistenceResult:
+    try:
+        finished_at = _utcnow()
+        claimed = claim_turn_completion(
+            session,
+            turn_id=turn_id,
+            expected_generation=expected_generation,
+            new_status="FAILED",
+            finished_at=finished_at,
+            error_code=error_code[:64],
+        )
+        if not claimed:
+            _rollback_safely(session, turn_id=turn_id)
+            observed = _read_turn_after_rollback(session, turn_id=turn_id)
+            return _classify_observed_turn(observed, expected_generation=expected_generation)
+
+        persisted_usage = session.get(AIUsageRecord, usage_id)
+        if persisted_usage is not None:
+            persisted_usage.status = "TIMEOUT" if is_timeout else "FAILED"
+            persisted_usage.error_code = error_code[:64]
+            persisted_usage.duration_ms = duration_ms
+            persisted_usage.finished_at = finished_at
+
+        add_tool_executions(
+            session,
+            _build_tool_execution_rows(
+                turn_id=turn_id,
+                usage_id=usage_id,
+                traces=traces,
+                finished_at=finished_at,
+            ),
+        )
+        session.commit()
+        return FailurePersistenceResult(status=FailurePersistenceStatus.PERSISTED)
+    except Exception as persist_exc:
+        _rollback_safely(session, turn_id=turn_id)
+        logger.warning(
+            "ai_turn_failure_persistence_failed",
+            extra={
+                "turn_id": turn_id,
+                "error_type": type(persist_exc).__name__,
+            },
+        )
+        observed = _read_turn_after_rollback(session, turn_id=turn_id)
+        return _classify_observed_turn(observed, expected_generation=expected_generation)
+
+
+def _build_tool_execution_rows(
+    *,
+    turn_id: int,
+    usage_id: int,
+    traces: tuple[ToolExecutionTrace, ...],
+    finished_at: datetime,
+) -> list[AIToolExecution]:
+    return [
+        AIToolExecution(
+            turn_id=turn_id,
+            usage_record_id=usage_id,
+            invocation_no=trace.invocation_no,
+            tool_name=trace.tool_name,
+            status=trace.status,
+            finished_at=finished_at,
+            duration_ms=trace.duration_ms,
+            error_code=trace.error_code[:64] if trace.error_code else None,
+        )
+        for trace in traces
+    ]
+
+
+def list_my_conversations(
+    user: CurrentUserResponse,
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> AIConversationListResponse:
+    items, total = list_owned_conversations(
+        session,
+        owner_user_id=user.id,
+        page=page,
+        page_size=page_size,
+    )
+    return AIConversationListResponse(
+        items=[
+            AIConversationSummary(
+                id=item.id,
+                title=item.title,
+                club_context_id=item.club_context_id,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in items
+        ],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+def get_my_conversation_detail(
+    conversation_id: int,
+    user: CurrentUserResponse,
+    session: Session,
+) -> AIConversationDetailResponse:
+    conversation = get_owned_conversation(
+        session,
+        conversation_id=conversation_id,
+        owner_user_id=user.id,
+    )
+    if conversation is None:
+        raise AIConversationNotFoundError()
+    messages = list_conversation_messages(session, conversation_id=conversation.id)
+    return AIConversationDetailResponse(
+        id=conversation.id,
+        title=conversation.title,
+        club_context_id=conversation.club_context_id,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=[
+            AIMessageItem(
+                id=msg.id,
+                turn_id=msg.turn_id,
+                role=msg.role,  # type: ignore[arg-type]
+                status=msg.status,
+                content=msg.content,
+                created_at=msg.created_at,
+            )
+            for msg in messages
+        ],
+    )

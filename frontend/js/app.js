@@ -50,17 +50,57 @@ function resetEventsUiState() {
   eventsUiState.editingEvent = null;
   eventsUiState.managedEventsById.clear();
 }
+function generateClientRequestKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = ch === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+const aiUiState = {
+  conversationId: null,
+  messages: [],
+  pendingKey: null,
+  pendingMessage: null,
+  pendingConversationId: null,
+  abortController: null,
+};
+function resetAiUiState() {
+  if (aiUiState.abortController) {
+    aiUiState.abortController.abort();
+    aiUiState.abortController = null;
+  }
+  aiUiState.conversationId = null;
+  aiUiState.messages = [];
+  aiUiState.pendingKey = null;
+  aiUiState.pendingMessage = null;
+  aiUiState.pendingConversationId = null;
+  if (typeof document !== "undefined") {
+    renderAiChatHistory();
+    const input = $("#ai-chat-input");
+    if (input) input.value = "";
+    const submitBtn = $("#ai-chat-submit");
+    if (submitBtn) submitBtn.disabled = false;
+    const msgNode = $("#ai-chat-message");
+    if (msgNode) message(msgNode, "");
+  }
+}
 function replaceSession(accessToken) {
   state.generation += 1;
   state.accessToken = accessToken;
   state.user = null;
   resetEventsUiState();
+  resetAiUiState();
 }
 function invalidateSession() {
   state.generation += 1;
   state.accessToken = null;
   state.user = null;
   resetEventsUiState();
+  resetAiUiState();
 }
 function refreshAccessToken() {
   if (refreshPromise && refreshGeneration === state.generation) return refreshPromise;
@@ -1232,8 +1272,109 @@ async function logout() {
   message($("#admin-message"), "");
   showSignedOut("Signed out successfully.");
 }
+function renderAiChatHistory() {
+  const container = $("#ai-chat-history");
+  if (!container) return;
+  if (!aiUiState.messages.length) {
+    container.innerHTML = '<p class="empty">Ask a question to start a conversation.</p>';
+    return;
+  }
+  container.innerHTML = aiUiState.messages
+    .map((entry) => {
+      const tools =
+        entry.toolCalls && entry.toolCalls.length
+          ? `<p class="meta">Tools: ${entry.toolCalls.map((t) => escapeHtml(`${t.tool_name} (${t.status})`)).join(", ")}</p>`
+          : "";
+      return `<article class="card">
+        <div class="card-heading">
+          <strong>${escapeHtml(entry.role === "USER" ? "You" : "Assistant")}</strong>
+          ${entry.provider ? `<span class="badge">${escapeHtml(entry.provider)}</span>` : ""}
+        </div>
+        <p>${escapeHtml(entry.content)}</p>
+        ${tools}
+      </article>`;
+    })
+    .join("");
+}
+
+const TERMINAL_AI_ERROR_CODES = new Set([
+  "AI_PROVIDER_TIMEOUT",
+  "AI_PROVIDER_UNAVAILABLE",
+  "AI_TOOL_BUDGET_EXCEEDED",
+  "AI_TOOL_VALIDATION_ERROR",
+  "AI_IDEMPOTENCY_KEY_REUSED",
+]);
+
+async function submitAiChat(event) {
+  event.preventDefault();
+  const generation = state.generation;
+  const input = $("#ai-chat-input");
+  const submitBtn = $("#ai-chat-submit");
+  const msgNode = $("#ai-chat-message");
+  const rawMessage = input?.value?.trim() || "";
+  if (!rawMessage) {
+    if (msgNode) message(msgNode, "Please enter a question for the assistant.", "error");
+    return;
+  }
+  if (
+    aiUiState.pendingKey === null ||
+    aiUiState.pendingMessage !== rawMessage ||
+    aiUiState.pendingConversationId !== aiUiState.conversationId
+  ) {
+    aiUiState.pendingKey = generateClientRequestKey();
+    aiUiState.pendingMessage = rawMessage;
+    aiUiState.pendingConversationId = aiUiState.conversationId;
+  }
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  aiUiState.abortController = controller;
+  if (submitBtn) submitBtn.disabled = true;
+  if (msgNode) message(msgNode, "Asking assistant…");
+  try {
+    const result = await api("/api/v1/ai/chat", {
+      method: "POST",
+      signal: controller?.signal,
+      body: JSON.stringify({
+        message: rawMessage,
+        conversation_id: aiUiState.conversationId,
+        client_request_key: aiUiState.pendingKey,
+      }),
+    });
+    if (state.generation !== generation) return;
+    aiUiState.conversationId = result.conversation_id;
+    aiUiState.pendingKey = null;
+    aiUiState.pendingMessage = null;
+    aiUiState.pendingConversationId = null;
+    aiUiState.messages.push(
+      { role: "USER", content: rawMessage, toolCalls: [] },
+      {
+        role: "ASSISTANT",
+        content: result.reply,
+        provider: result.provider,
+        toolCalls: result.tool_calls || [],
+      },
+    );
+    if (input) input.value = "";
+    renderAiChatHistory();
+    if (msgNode) message(msgNode, "");
+  } catch (error) {
+    if (state.generation !== generation || error?.name === "AbortError") return;
+    if (error?.errorCode && TERMINAL_AI_ERROR_CODES.has(error.errorCode)) {
+      aiUiState.pendingKey = null;
+      aiUiState.pendingMessage = null;
+      aiUiState.pendingConversationId = null;
+    }
+    if (msgNode) message(msgNode, error.message, "error");
+  } finally {
+    if (state.generation === generation) {
+      if (aiUiState.abortController === controller) aiUiState.abortController = null;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+}
+
 function initialize() {
   $("#login-form").addEventListener("submit", login);
+  $("#ai-chat-form")?.addEventListener("submit", submitAiChat);
   $("#club-request-form").addEventListener("submit", submitClubRequest);
   $("#admin-list").addEventListener("click", reviewClubRequest);
   $("#discovery-list").addEventListener("submit", submitMembershipApplication);
@@ -1296,4 +1437,8 @@ else
     handleMyTaskAction,
     handleManagerTaskAction,
     setTaskFormMode,
+    aiUiState,
+    renderAiChatHistory,
+    resetAiUiState,
+    submitAiChat,
   };
