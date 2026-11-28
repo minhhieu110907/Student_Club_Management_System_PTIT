@@ -12,13 +12,19 @@ from app.db.session import get_db_session
 from app.main import create_app
 from app.modules.ai.config import AISettings
 from app.modules.ai.exceptions import (
+    AIIdempotencyKeyReusedError,
     AIProviderTimeoutError,
     AIProviderUnavailableError,
     AIToolBudgetExceededError,
+    AITurnInProgressError,
 )
 from app.modules.ai.provider import GeminiAIProvider, MockAIProvider
 from app.modules.ai.schemas import AIChatRequest
-from app.modules.ai.service import chat_with_assistant
+from app.modules.ai.service import (
+    _compute_payload_hash,
+    _resolve_existing_turn,
+    chat_with_assistant,
+)
 from app.modules.ai.tool_executor import bind_authenticated_request
 from app.modules.identity.auth_config import build_authentication_settings
 from app.modules.identity.dependencies import get_current_user
@@ -251,6 +257,9 @@ def test_chat_service_commits_before_calling_provider(monkeypatch) -> None:
         def get(self, model, ident):
             return SimpleNamespace(id=ident, status="PENDING")
 
+        def execute(self, stmt):
+            return SimpleNamespace(rowcount=1)
+
         def get_bind(self):
             return None
 
@@ -279,6 +288,154 @@ def test_chat_service_commits_before_calling_provider(monkeypatch) -> None:
     )
     assert response.reply == "Hello!"
     assert events_order == ["commit", "provider_call", "commit"]
+
+
+def test_gemini_provider_shrinks_http_timeout_by_remaining_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.modules.ai.tool_executor.get_my_tasks",
+        lambda u, s, **kwargs: EventTaskListResponse(items=[], page=1, page_size=20, total=0),
+    )
+    recorded_timeouts: list[int] = []
+    first_response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    role="model",
+                    parts=[
+                        SimpleNamespace(function_call=SimpleNamespace(name="get_my_tasks", args={}))
+                    ],
+                )
+            )
+        ],
+        usage_metadata=None,
+        text=None,
+        response_id="r-1",
+    )
+    second_response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(role="model", parts=[SimpleNamespace(function_call=None)])
+            )
+        ],
+        usage_metadata=None,
+        text="Done.",
+        response_id="r-2",
+    )
+
+    def fake_generate_content(*, model, contents, config):
+        recorded_timeouts.append(config.http_options.timeout)
+        if len(recorded_timeouts) == 1:
+            bound.budget.started_at -= 8.0
+            return first_response
+        return second_response
+
+    fake_models = MagicMock()
+    fake_models.generate_content.side_effect = fake_generate_content
+    provider = GeminiAIProvider(_gemini_settings(), client=SimpleNamespace(models=fake_models))
+    bound = bind_authenticated_request(
+        _student(),
+        request_id="req-timeout-shrink",
+        settings=_gemini_settings(),
+        session=MagicMock(),
+    )
+
+    result = provider.generate_reply(prompt="Tasks?", history=[], bound_request=bound)
+    assert result.reply == "Done."
+    assert len(recorded_timeouts) == 2
+    assert recorded_timeouts[1] <= recorded_timeouts[0] - 2000
+
+
+def test_gemini_provider_disables_sdk_retries_and_stops_when_remaining_near_zero() -> None:
+    recorded_attempts: list[int | None] = []
+    first_response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    role="model",
+                    parts=[
+                        SimpleNamespace(function_call=SimpleNamespace(name="get_my_tasks", args={}))
+                    ],
+                )
+            )
+        ],
+        usage_metadata=None,
+        text=None,
+        response_id="r-edge",
+    )
+
+    def fake_generate_content(*, model, contents, config):
+        recorded_attempts.append(config.http_options.retry_options.attempts)
+        bound.budget.started_at -= 15.0
+        return first_response
+
+    fake_models = MagicMock()
+    fake_models.generate_content.side_effect = fake_generate_content
+    provider = GeminiAIProvider(_gemini_settings(), client=SimpleNamespace(models=fake_models))
+    bound = bind_authenticated_request(
+        _student(),
+        request_id="req-near-zero",
+        settings=_gemini_settings(),
+        session=MagicMock(),
+    )
+
+    with pytest.raises(AIProviderTimeoutError):
+        provider.generate_reply(prompt="Tasks?", history=[], bound_request=bound)
+    assert recorded_attempts == [1]
+    assert fake_models.generate_content.call_count == 1
+
+
+def test_chat_service_handles_non_app_exception_and_marks_turn_failed() -> None:
+    from contextlib import nullcontext
+
+    added_objects: list[object] = []
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self._next_id = 1
+
+        def add(self, obj) -> None:
+            if getattr(obj, "id", None) is None:
+                obj.id = self._next_id
+                self._next_id += 1
+            added_objects.append(obj)
+
+        def add_all(self, objs) -> None:
+            for obj in objs:
+                self.add(obj)
+
+        def flush(self) -> None:
+            pass
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
+        def get(self, model, ident):
+            return SimpleNamespace(id=ident, status="PENDING")
+
+        def execute(self, stmt):
+            return SimpleNamespace(rowcount=1)
+
+        def get_bind(self):
+            return None
+
+    class ExplodingProvider:
+        def generate_reply(self, *, prompt, history, bound_request):
+            raise RuntimeError("unexpected secret-leaking crash")
+
+    with pytest.raises(AIProviderUnavailableError) as exc_info:
+        chat_with_assistant(
+            AIChatRequest(message="Crash please"),
+            _student(),
+            FakeSession(),  # type: ignore[arg-type]
+            settings=AISettings("mock", None, "gemini-2.5-flash", 15.0, 3, 32768, 15.0),
+            request_id="req-crash",
+            provider=ExplodingProvider(),  # type: ignore[arg-type]
+            tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+        )
+    assert "secret-leaking" not in exc_info.value.message
 
 
 def test_ai_router_requires_authentication_and_validates_payload() -> None:
@@ -340,3 +497,197 @@ def test_ai_router_chat_endpoint_returns_mock_response(monkeypatch) -> None:
         body = response.json()
         assert body["provider"] == "mock"
         assert body["tool_calls"][0]["tool_name"] == "list_upcoming_events"
+
+
+def test_idempotency_error_codes_distinguish_in_progress_reused_and_saved_failure() -> None:
+    payload_hash = _compute_payload_hash(prompt="Hello", club_context_id=None)
+    other_hash = _compute_payload_hash(prompt="Different", club_context_id=None)
+
+    running_turn = SimpleNamespace(status="RUNNING", payload_hash=payload_hash, error_code=None)
+    with pytest.raises(AITurnInProgressError) as in_prog_exc:
+        _resolve_existing_turn(MagicMock(), existing_turn=running_turn, payload_hash=payload_hash)
+    assert in_prog_exc.value.status_code == 409
+    assert in_prog_exc.value.error_code == "AI_TURN_IN_PROGRESS"
+
+    with pytest.raises(AIIdempotencyKeyReusedError) as reused_exc:
+        _resolve_existing_turn(MagicMock(), existing_turn=running_turn, payload_hash=other_hash)
+    assert reused_exc.value.status_code == 409
+    assert reused_exc.value.error_code == "AI_IDEMPOTENCY_KEY_REUSED"
+
+    failed_turn = SimpleNamespace(
+        status="FAILED", payload_hash=payload_hash, error_code="AI_PROVIDER_TIMEOUT"
+    )
+    with pytest.raises(AIProviderTimeoutError) as failed_exc:
+        _resolve_existing_turn(MagicMock(), existing_turn=failed_turn, payload_hash=payload_hash)
+    assert failed_exc.value.status_code == 504
+    assert failed_exc.value.error_code == "AI_PROVIDER_TIMEOUT"
+
+
+def test_ai_router_maps_idempotency_error_codes_in_http_409_responses(monkeypatch) -> None:
+    app = create_app(
+        database_resources_factory=lambda: None,
+        authentication_settings_factory=lambda: None,
+        ai_settings_factory=lambda: AISettings(
+            "mock", None, "gemini-2.5-flash", 15.0, 3, 32768, 15.0
+        ),
+    )
+    app.dependency_overrides[get_current_user] = lambda: _student()
+    app.dependency_overrides[get_db_session] = lambda: MagicMock()
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(
+            "app.modules.ai.router.chat_with_assistant",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AITurnInProgressError()),
+        )
+        r1 = client.post("/api/v1/ai/chat", json={"message": "Hi"})
+        assert r1.status_code == 409
+        assert r1.json()["error_code"] == "AI_TURN_IN_PROGRESS"
+
+        monkeypatch.setattr(
+            "app.modules.ai.router.chat_with_assistant",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AIIdempotencyKeyReusedError()),
+        )
+        r2 = client.post("/api/v1/ai/chat", json={"message": "Hi"})
+        assert r2.status_code == 409
+        assert r2.json()["error_code"] == "AI_IDEMPOTENCY_KEY_REUSED"
+
+
+def test_post_phase1_init_failures_persist_turn_failure_and_preserve_original_error(
+    monkeypatch,
+) -> None:
+    from contextlib import nullcontext
+
+    def _make_session(*, fail_claim_commit: bool = False, claim_rowcount: int = 1):
+        recorded_claims: list[dict] = []
+
+        class FakeSession:
+            def __init__(self) -> None:
+                self._next_id = 1
+                self.commits = 0
+                self.rollbacks = 0
+
+            def add(self, obj) -> None:
+                if getattr(obj, "id", None) is None:
+                    obj.id = self._next_id
+                    self._next_id += 1
+
+            def add_all(self, objs) -> None:
+                for obj in objs:
+                    self.add(obj)
+
+            def flush(self) -> None:
+                pass
+
+            def commit(self) -> None:
+                self.commits += 1
+                if fail_claim_commit and self.commits > 1:
+                    raise RuntimeError("db commit failed during failure persistence")
+
+            def rollback(self) -> None:
+                self.rollbacks += 1
+
+            def get(self, model, ident):
+                return SimpleNamespace(id=ident, status="PENDING")
+
+            def execute(self, stmt):
+                recorded_claims.append({"stmt": str(stmt)})
+                return SimpleNamespace(rowcount=claim_rowcount)
+
+            def get_bind(self):
+                return None
+
+        return FakeSession(), recorded_claims
+
+    settings = AISettings("mock", None, "gemini-2.5-flash", 15.0, 3, 32768, 15.0)
+
+    # 1. Provider factory raises
+    s1, claims1 = _make_session()
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "app.modules.ai.service.build_ai_provider",
+            lambda _s: (_ for _ in ()).throw(RuntimeError("provider init boom")),
+        )
+        with pytest.raises(AIProviderUnavailableError):
+            chat_with_assistant(
+                AIChatRequest(message="Hi"),
+                _student(),
+                s1,  # type: ignore[arg-type]
+                settings=settings,
+                request_id="req-p1",
+                tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+            )
+    assert len(claims1) == 1
+    assert s1.commits == 2
+
+    # 2. Tool session factory raises
+    s2, claims2 = _make_session()
+    with pytest.raises(AIProviderUnavailableError):
+        chat_with_assistant(
+            AIChatRequest(message="Hi"),
+            _student(),
+            s2,  # type: ignore[arg-type]
+            settings=settings,
+            request_id="req-p2",
+            provider=MockAIProvider(),  # type: ignore[arg-type]
+            tool_session_factory=lambda: (_ for _ in ()).throw(
+                RuntimeError("session factory boom")
+            ),
+        )
+    assert len(claims2) == 1
+    assert s2.commits == 2
+
+    # 3. bind_authenticated_request raises
+    s3, claims3 = _make_session()
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "app.modules.ai.service.bind_authenticated_request",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bind boom")),
+        )
+        with pytest.raises(AIProviderUnavailableError):
+            chat_with_assistant(
+                AIChatRequest(message="Hi"),
+                _student(),
+                s3,  # type: ignore[arg-type]
+                settings=settings,
+                request_id="req-p3",
+                provider=MockAIProvider(),  # type: ignore[arg-type]
+                tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+            )
+    assert len(claims3) == 1
+    assert s3.commits == 2
+
+    # 4. Failure persistence error does not mask original AppException and fencing rollbacks
+    s4, _ = _make_session(fail_claim_commit=True)
+    with pytest.raises(AIProviderTimeoutError):
+        chat_with_assistant(
+            AIChatRequest(message="Hi"),
+            _student(),
+            s4,  # type: ignore[arg-type]
+            settings=settings,
+            request_id="req-p4",
+            provider=SimpleNamespace(
+                generate_reply=lambda **kwargs: (_ for _ in ()).throw(
+                    AIProviderTimeoutError("original timeout")
+                )
+            ),  # type: ignore[arg-type]
+            tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+        )
+    assert s4.rollbacks >= 1
+
+    # 5. Stale worker fencing when claim_turn_completion returns 0 rows
+    s5, _ = _make_session(claim_rowcount=0)
+    with pytest.raises(AIProviderTimeoutError):
+        chat_with_assistant(
+            AIChatRequest(message="Hi"),
+            _student(),
+            s5,  # type: ignore[arg-type]
+            settings=settings,
+            request_id="req-p5",
+            provider=SimpleNamespace(
+                generate_reply=lambda **kwargs: (_ for _ in ()).throw(
+                    AIProviderTimeoutError("late timeout")
+                )
+            ),  # type: ignore[arg-type]
+            tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+        )
+    assert s5.rollbacks >= 1

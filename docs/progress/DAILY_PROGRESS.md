@@ -99,5 +99,12 @@
   - Lưu ý: Gemini live API chưa được test bằng `GEMINI_API_KEY` thật; các test Gemini sử dụng mocked `genai.Client` và `MockAIProvider`.
 - Schema / migration changes: None (dùng 5 bảng AI có sẵn trong `20261026_01`).
 - Open bugs and tech debt: Xem chi tiết 7 review findings (trong đó có P1 `AI-01` về crash/stale lease trên `ai_turns.inflight_guard`) tại `docs/progress/DAY09_AI_HANDOFF.md`.
+- Hardening pass (2026-11-28, working tree chưa commit trên `feature/day09-gemini-ai`):
+  - **AI-01 (Fixed):** Khởi tạo `lease_expires_at` (`request_deadline_seconds + 15s` UTC) và `lease_generation=1`, thêm atomic stale-lease recovery dưới `ai_conversations` `FOR UPDATE` + `ai_turns` current read (`FOR UPDATE`), fencing `claim_turn_completion()` theo `(id, status='RUNNING', lease_generation)`, và catch-all `except Exception:` đóng turn an toàn.
+  - **AI-02 (Fixed in code, pending MySQL run):** Thêm migration tăng dần `20261128_01_ai_conversation_create_key.py` (`ai_conversations.create_request_key BINARY(16) NULL` + `uq_ai_conversation_create_request (owner_user_id, create_request_key)`) cho phép idempotency cả khi `conversation_id=None`; sửa retry semantics trả lại trạng thái lỗi đã lưu khi turn `FAILED` (không chạy lại provider); frontend giữ nguyên `client_request_key` khi network retry và tạo key mới khi explicit retry sau HTTP error.
+  - **AI-03 (Verified & Fixed):** Kiểm chứng `google-genai==1.75.0` (`HttpOptions.timeout` tính bằng ms, `GenerateContentConfig.http_options` truyền từng round, tắt SDK retry ngầm bằng `HttpRetryOptions(attempts=1)`).
+  - **AI-04 (Assessed — No issue found):** Sau Phase 1 `commit()`, `session.in_transaction()` là `False`; bổ sung test xác minh trên MySQL.
+  - **AI-06 (Fixed & Verified):** `resetAiUiState()` + `AbortController` được gọi trong `replaceSession()` và `invalidateSession()`, chặn delayed response của tài khoản cũ.
+  - Kiểm thử sau hardening (2026-11-28): Ruff check & format PASS; ordinary tests PASS (`253 passed, 74 deselected`); frontend JS PASS (`30 passed, 0 failed`); MySQL 8.4.4 integration (`74` tests) & Docker build **NOT RUN** trong lượt này do Docker Desktop daemon chưa bật.
 - Next step: Xử lý các review findings được Owner duyệt (ưu tiên `AI-01`, `AI-02`), chạy lại regression và mở PR vào `main`.
 - Evidence: `backend/app/modules/ai/`, `backend/tests/test_ai_tool_executor.py`, `backend/tests/test_ai_provider_and_api.py`, `backend/tests/integration/test_ai_assistant.py`, `docs/progress/DAY09_AI_HANDOFF.md`.

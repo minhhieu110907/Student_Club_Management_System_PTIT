@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import sqlalchemy as sa
@@ -13,13 +13,15 @@ from sqlalchemy.dialects import mysql
 
 from app.db.model_registry import Base
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REVISION_PATH = BACKEND_ROOT / "alembic" / "versions" / "20261026_01_initial_schema.py"
+FOLLOWUP_REVISION_PATH = (
+    BACKEND_ROOT / "alembic" / "versions" / "20261128_01_ai_conversation_create_key.py"
+)
 
 
-def _load_revision() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("scms_initial_revision", REVISION_PATH)
+def _load_revision(path: Path = REVISION_PATH, name: str = "scms_initial_revision") -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -48,6 +50,25 @@ class MigrationRecorder:
     def drop_table(self, table_name: str) -> None:
         self.dropped_tables.append(table_name)
 
+    def add_column(self, table_name: str, column: sa.Column[object]) -> None:
+        table = self.metadata.tables[table_name]
+        table.append_column(column)
+
+    def drop_column(self, table_name: str, column_name: str) -> None:
+        table = self.metadata.tables[table_name]
+        col = table.c[column_name]
+        table._columns.remove(col)
+
+    def create_unique_constraint(self, name: str, table_name: str, columns: list[str]) -> None:
+        table = self.metadata.tables[table_name]
+        table.append_constraint(sa.UniqueConstraint(*(table.c[col] for col in columns), name=name))
+
+    def drop_constraint(self, name: str, table_name: str, type_: str | None = None) -> None:
+        del type_
+        table = self.metadata.tables[table_name]
+        target = next(c for c in table.constraints if c.name == name)
+        table.constraints.remove(target)
+
 
 def _normalized(value: object) -> str:
     return " ".join(str(value).split())
@@ -63,14 +84,22 @@ def _metadata_signature(metadata: sa.MetaData) -> dict[str, object]:
                 column.nullable,
                 column.primary_key,
                 column.autoincrement,
-                None if column.server_default is None or column.computed is not None else str(column.server_default.arg),
-                None if column.computed is None else (_normalized(column.computed.sqltext), column.computed.persisted),
+                None
+                if column.server_default is None or column.computed is not None
+                else str(column.server_default.arg),
+                None
+                if column.computed is None
+                else (_normalized(column.computed.sqltext), column.computed.persisted),
             )
             for table in metadata.tables.values()
             for column in table.columns
         },
         "primary_keys": {
-            (table.name, table.primary_key.name, tuple(column.name for column in table.primary_key.columns))
+            (
+                table.name,
+                table.primary_key.name,
+                tuple(column.name for column in table.primary_key.columns),
+            )
             for table in metadata.tables.values()
         },
         "foreign_keys": {
@@ -115,15 +144,22 @@ def _metadata_signature(metadata: sa.MetaData) -> dict[str, object]:
 
 def test_initial_revision_operations_match_complete_model_registry() -> None:
     revision = _load_revision()
+    followup = _load_revision(FOLLOWUP_REVISION_PATH, "scms_followup_revision")
     recorder = MigrationRecorder()
     revision.op = recorder
+    followup.op = recorder
 
     revision.upgrade()
-
     assert revision.revision == "20261026_01"
     assert revision.down_revision is None
     assert tuple(recorder.metadata.tables) == revision.UPGRADE_TABLE_ORDER
+
+    initial_signature = _metadata_signature(recorder.metadata)
+    followup.upgrade()
     assert _metadata_signature(recorder.metadata) == _metadata_signature(Base.metadata)
+
+    followup.downgrade()
+    assert _metadata_signature(recorder.metadata) == initial_signature
 
 
 def test_downgrade_uses_dependency_safe_reverse_order() -> None:
@@ -159,7 +195,10 @@ def test_offline_mysql_sql_generation_requires_no_database_connection() -> None:
     assert sql.count("FOREIGN KEY") == 29
     assert sql.count("GENERATED ALWAYS AS") == 5
     assert "FOREIGN KEY(source_application_id, club_id, user_id)" in sql
-    assert "REFERENCES membership_applications (id, club_id, user_id) ON DELETE RESTRICT ON UPDATE RESTRICT" in sql
+    assert (
+        "REFERENCES membership_applications (id, club_id, user_id) ON DELETE RESTRICT ON UPDATE RESTRICT"
+        in sql
+    )
     assert "FOREIGN KEY(turn_id, conversation_id)" in sql
     assert "REFERENCES ai_turns (id, conversation_id) ON DELETE CASCADE" in sql
     assert "COLLATE utf8mb4_0900_as_cs" in sql

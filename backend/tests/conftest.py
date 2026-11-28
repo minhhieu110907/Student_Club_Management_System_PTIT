@@ -30,7 +30,7 @@ REQUIRED_INTEGRATION_MODULES = {
     "tests/integration/test_event_tasks_and_leave.py",
     "tests/integration/test_ai_assistant.py",
 }
-APPROVED_INTEGRATION_TEST_COUNT = 68
+APPROVED_INTEGRATION_TEST_COUNT = 74
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

@@ -224,7 +224,10 @@ class GeminiAIProvider:
         self._settings = settings
         self._client = client or genai.Client(
             api_key=settings.gemini_api_key,
-            http_options=types.HttpOptions(timeout=int(settings.timeout_seconds * 1000)),
+            http_options=types.HttpOptions(
+                timeout=int(settings.timeout_seconds * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
         self._tools = _build_gemini_tools()
 
@@ -257,7 +260,22 @@ class GeminiAIProvider:
 
         for _round in range(max_rounds):
             bound_request.budget.check_deadline()
-            response = self._call_gemini(contents=contents, config=config)
+            remaining_ms = max(
+                1,
+                int(
+                    min(self._settings.timeout_seconds, bound_request.budget.remaining_seconds())
+                    * 1000
+                ),
+            )
+            round_config = config.model_copy(
+                update={
+                    "http_options": types.HttpOptions(
+                        timeout=remaining_ms,
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    )
+                }
+            )
+            response = self._call_gemini(contents=contents, config=round_config)
 
             usage = getattr(response, "usage_metadata", None)
             if usage is not None:

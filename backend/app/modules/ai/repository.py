@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.ai.models import (
@@ -18,6 +18,25 @@ from app.modules.clubs.models import Club
 def club_exists(session: Session, club_id: int) -> bool:
     stmt = select(Club.id).where(Club.id == club_id)
     return session.execute(stmt).scalar_one_or_none() is not None
+
+
+def get_conversation_by_create_key_for_update(
+    session: Session,
+    *,
+    owner_user_id: int,
+    create_request_key: bytes,
+) -> AIConversation | None:
+    stmt = (
+        select(AIConversation)
+        .where(
+            AIConversation.owner_user_id == owner_user_id,
+            AIConversation.create_request_key == create_request_key,
+            AIConversation.deleted_at.is_(None),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return session.execute(stmt).scalar_one_or_none()
 
 
 def get_owned_conversation_for_update(
@@ -51,6 +70,92 @@ def get_owned_conversation(
         AIConversation.deleted_at.is_(None),
     )
     return session.execute(stmt).scalar_one_or_none()
+
+
+def get_inflight_turn_for_update(
+    session: Session,
+    *,
+    conversation_id: int,
+) -> AITurn | None:
+    stmt = (
+        select(AITurn)
+        .where(
+            AITurn.conversation_id == conversation_id,
+            AITurn.status.in_(("PENDING", "RUNNING")),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def get_turn_by_request_key(
+    session: Session,
+    *,
+    conversation_id: int,
+    client_request_key: bytes,
+) -> AITurn | None:
+    stmt = (
+        select(AITurn)
+        .where(
+            AITurn.conversation_id == conversation_id,
+            AITurn.client_request_key == client_request_key,
+        )
+        .execution_options(populate_existing=True)
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def get_assistant_message_for_turn(session: Session, *, turn_id: int) -> AIMessage | None:
+    stmt = select(AIMessage).where(
+        AIMessage.turn_id == turn_id,
+        AIMessage.role == "ASSISTANT",
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def get_usage_record_for_turn(session: Session, *, turn_id: int) -> AIUsageRecord | None:
+    stmt = select(AIUsageRecord).where(
+        AIUsageRecord.turn_id == turn_id,
+        AIUsageRecord.attempt_no == 1,
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def list_tool_executions_for_turn(session: Session, *, turn_id: int) -> list[AIToolExecution]:
+    stmt = (
+        select(AIToolExecution)
+        .where(AIToolExecution.turn_id == turn_id)
+        .order_by(AIToolExecution.invocation_no.asc())
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
+def claim_turn_completion(
+    session: Session,
+    *,
+    turn_id: int,
+    expected_generation: int,
+    new_status: str,
+    finished_at: datetime,
+    error_code: str | None = None,
+) -> bool:
+    """Atomically transition a RUNNING turn only if its lease_generation still matches."""
+    stmt = (
+        update(AITurn)
+        .where(
+            AITurn.id == turn_id,
+            AITurn.status == "RUNNING",
+            AITurn.lease_generation == expected_generation,
+        )
+        .values(
+            status=new_status,
+            finished_at=finished_at,
+            error_code=error_code,
+        )
+    )
+    result = session.execute(stmt)
+    return (result.rowcount or 0) == 1
 
 
 def list_owned_conversations(
@@ -117,9 +222,11 @@ def create_conversation(
     club_context_id: int | None,
     now: datetime,
     purge_after: datetime,
+    create_request_key: bytes | None = None,
 ) -> AIConversation:
     conversation = AIConversation(
         owner_user_id=owner_user_id,
+        create_request_key=create_request_key,
         title=title,
         club_context_id=club_context_id,
         next_turn_no=1,

@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import create_db_engine
 
-EXPECTED_ALEMBIC_REVISION = "20261026_01"
+EXPECTED_ALEMBIC_REVISION = "20261128_01"
 DATABASE_TIMEOUT_SECONDS = 2
 
 

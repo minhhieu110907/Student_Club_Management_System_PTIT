@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +44,7 @@ class AIChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     conversation_id: int | None = Field(default=None, ge=1)
     club_context_id: int | None = Field(default=None, ge=1)
+    client_request_key: UUID | None = None
 
 
 class AIToolTraceItem(BaseModel):

@@ -3,7 +3,7 @@
 > **Source of Truth — Planning baseline v1.1 (Updated for MVP Acceleration)**
 > Updated: 2026-11-27
 > Project: **Student Club Management System (SCMS)**  
-> Status: **PR #10 (Day 08 Event Tasks, `cf4af52`) đã merge vào `main`; Day 09 Gemini AI Read-only Tool Calling đang triển khai trên `feature/day09-gemini-ai` (`2168953`, chờ review & fix findings trước khi PR).**
+> Status: **PR #10 (Day 08 Event Tasks, `cf4af52`) đã merge vào `main`; Day 09 Gemini AI Read-only Tool Calling đã commit (`2168953`, `21c85c9`) và đang có bản hardening chưa commit trên `feature/day09-gemini-ai` xử lý AI-01, AI-02, AI-03, AI-04, AI-06 (chờ chạy lại MySQL integration & Docker build sau khi bật Docker Desktop).**
 > Language for mentoring/reviews: Vietnamese. Code identifiers and technical artifacts: English.
 
 ## 0. HOW AN AI ASSISTANT MUST USE THIS DOCUMENT

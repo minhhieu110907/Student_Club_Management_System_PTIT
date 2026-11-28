@@ -38,27 +38,28 @@
 - **Phase 2 (`service.py:163-190`):** Gọi `provider.generate_reply()` bên ngoài DB transaction; mỗi tool call tự mở và đóng short-lived session riêng qua `_default_tool_session_factory()`.
 - **Phase 3 (`service.py:192-294`):** Cập nhật `ai_turns`, `ai_usage_records`, thêm `ai_messages (ASSISTANT)` và `ai_tool_executions`, rồi `session.commit()`.
 
-## 6. Test Results (trên code tại commit `2168953`)
-- **Ruff check & format:** PASS (`All checks passed!`, `16 files already formatted`).
-- **Backend ordinary tests (`pytest -p no:cacheprovider -m "not integration" -q`):** PASS — `250 passed, 68 deselected`.
-- **MySQL 8.4.4 integration (`pytest -p no:cacheprovider -m integration --require-integration-env -q` trên 12 isolated schemas):** PASS — `68 passed, 250 deselected`.
-- **Frontend JS (`node --check frontend/js/app.js` & `node --test frontend/js/app.test.js`):** PASS — `28 passed, 0 failed`.
-- **Docker build (`docker build --file Dockerfile --tag scms-backend:day09-verify .`):** PASS.
-- **Git diff check (`git diff --check`):** PASS.
+## 6. Test Results (trên working tree hardening ngày 2026-11-28)
+- **Ruff check & format:** PASS (`All checks passed!`, 11 files checked/formatted).
+- **Backend ordinary tests (`pytest -p no:cacheprovider -m "not integration" -q`):** PASS — `253 passed, 74 deselected` (bao gồm Alembic `20261026_01 -> 20261128_01` upgrade/downgrade parity, metadata parity `21` unique constraints, và test `AI-03` `retry_options.attempts == 1`).
+- **Frontend JS (`node --check frontend/js/app.js` & `node --test frontend/js/app.test.js`):** PASS — `30 passed, 0 failed`.
+- **MySQL 8.4.4 integration (`74` tests) & Docker build:** **NOT RUN / NOT VERIFIED** trên bản hardening 2026-11-28 do Docker Desktop daemon đang tắt (`open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.`).
 - **Lưu ý:** Chưa test Gemini live API với `GEMINI_API_KEY` thật.
 
-## 7. Independent Review Findings (Commit `2168953`)
-1. **AI-01 (Confirmed Bug — P1 / High):** Process crash hoặc unhandled non-`AppException` trong Phase 2 làm `ai_turns` kẹt ở `RUNNING` (`inflight_guard=1`) với `lease_expires_at=None`, khiến `uq_ai_one_inflight_turn` khóa cứng conversation đó vĩnh viễn (`409 AIConversationConflictError`).
-2. **AI-02 (Confirmed Bug / Gap — P2 / Medium):** `AIChatRequest` chưa nhận `client_request_key` / `Idempotency-Key`; `service.py:119` luôn sinh `uuid.uuid4().bytes` mới nên retry tạo duplicate turns.
-3. **AI-03 (Potential Risk — P2 / Medium):** `GeminiAIProvider` cấu hình `HttpOptions.timeout` tĩnh cho mỗi HTTP call (`15s`) thay vì co lại theo thời gian còn lại của `ToolBudget` khi vòng lặp tool chạy nhiều round.
-4. **AI-04 (Potential Risk — P2 / Medium):** `chat_with_assistant` tái sử dụng cùng một FastAPI `session` cho Phase 3 sau khi chờ provider; nên tách rõ lifecycle hoặc xử lý lỗi ghi Phase 3 để tránh kẹt turn.
-5. **AI-05 (Improvement — P3 / Low):** Chưa log `finish_reason` khi Gemini trả về text rỗng / safety block.
-6. **AI-06 (Improvement — P3 / Low):** Frontend chưa reset `aiUiState` khi đăng xuất (`invalidateSession`/`showSignedOut`).
-7. **AI-07 (Potential Risk — P3 / Low):** Chưa chạy smoke test với Gemini live API thật.
+## 7. Independent Review Findings & Hardening Status
+1. **AI-01 [Fixed in code, pending MySQL run — P1 / High]:** Khởi tạo `lease_expires_at` (`request_deadline_seconds + 15s` UTC) và `lease_generation=1`; recovery atomic trong Phase 1 dưới lock `ai_conversations` + current read `ai_turns` (`FOR UPDATE`); fencing Phase 3 bằng `claim_turn_completion()` (`WHERE id=? AND status='RUNNING' AND lease_generation=?`); catch-all `except Exception:` ghi `AI_INTERNAL_ERROR`.
+2. **AI-02 [Fixed in code, pending MySQL run — P2 / Medium]:**
+   - **New conversation idempotency:** Migration tăng dần `20261128_01_ai_conversation_create_key.py` thêm `ai_conversations.create_request_key BINARY(16) NULL` + `uq_ai_conversation_create_request (owner_user_id, create_request_key)`. Hai request đồng thời/tuần tự tạo mới cùng key được serialize và bảo vệ bằng DB unique constraint.
+   - **Retry semantics:** Same key + same payload + `SUCCEEDED` → replay response đã lưu; `RUNNING` → `409 AIConversationConflictError`; `FAILED` → trả lại trạng thái lỗi đã lưu (`AIProviderTimeoutError`/`AIToolBudgetExceededError`/`AIToolValidationError`/`AIProviderUnavailableError`) mà không chạy lại provider; khác payload → `409`. Frontend giữ nguyên `client_request_key` khi gặp network error (mất response) và tạo key mới khi explicit retry sau HTTP error từ server.
+3. **AI-03 [Verified & Fixed — P2 / Medium]:** Đã kiểm chứng `google-genai==1.75.0` trong `.venv`: `GenerateContentConfig.http_options` hỗ trợ `HttpOptions(timeout=..., retry_options=...)` với `timeout` tính bằng **milliseconds** và `BaseApiClient._request` mặc định dùng `self._retry` nếu không truyền `retry_options`. Đã cấu hình `timeout=remaining_ms` theo `ToolBudget.remaining_seconds()` và `retry_options=HttpRetryOptions(attempts=1)` ở mỗi round; dừng trước round mới khi `remaining_seconds <= 0`. (Vẫn phụ thuộc blocking HTTP socket timeout ở OS/httpx khi gọi live API).
+4. **AI-04 [Assessed — No issue found, pending MySQL run]:** `session.commit()` ở cuối Phase 1 kết thúc transaction (`session.in_transaction() == False`).
+5. **AI-05 [Deferred — P3 / Low]:** Chưa log `finish_reason` khi Gemini trả về text rỗng / safety block.
+6. **AI-06 [Fixed & Verified — P2 / Medium]:** `resetAiUiState()` + `AbortController` trong `replaceSession()` / `invalidateSession()` xóa state, DOM và hủy/bỏ qua response trễ từ phiên cũ.
+7. **AI-07 [Deferred — P3 / Low]:** Chưa chạy smoke test với Gemini live API thật.
 
 ## 8. Những rủi ro chưa xác minh
-- Tương thích schema `types.FunctionDeclaration` / `types.Part.from_function_response` với Gemini API live endpoint (`GEMINI_API_KEY` thật).
-- Hành vi connection pool dưới tải thực tế khi Gemini API phản hồi chậm sát ngưỡng timeout 15s.
+- Bộ 72 MySQL 8.4.4 integration tests (gồm 4 test mới cho AI-01/AI-02/AI-04) và `docker build` chưa chạy được trên bản hardening 2026-11-28 vì Docker Desktop daemon đang tắt (`dockerDesktopLinuxEngine` unavailable).
+- Tương thích schema `types.FunctionDeclaration` / `types.Part.from_function_response` và `GenerateContentConfig.http_options` với Gemini API live endpoint (`GEMINI_API_KEY` thật).
+- Idempotency cho concurrent requests tạo conversation mới (`conversation_id=None`) nếu không có migration bổ sung `ai_conversations.create_request_key`.
 
 ## 9. Thứ tự công việc agent tiếp theo cần xử lý
 1. Sửa **AI-01 (P1)**: set `lease_expires_at` khi tạo `AITurn`, bổ sung catch-all `except Exception:` trong Phase 2 để đóng turn/usage khi gặp lỗi bất ngờ, và thêm stale-lease recovery trong Phase 1 kèm integration test trên MySQL.

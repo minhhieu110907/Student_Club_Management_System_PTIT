@@ -27,8 +27,11 @@ class ToolBudget:
         if self.started_at == 0.0:
             self.started_at = time.monotonic()
 
+    def remaining_seconds(self) -> float:
+        return self.deadline_seconds - (time.monotonic() - self.started_at)
+
     def check_deadline(self) -> None:
-        if time.monotonic() - self.started_at >= self.deadline_seconds:
+        if self.remaining_seconds() <= 0:
             raise AIProviderTimeoutError("AI request exceeded execution time budget")
 
     def reserve(self) -> None:
