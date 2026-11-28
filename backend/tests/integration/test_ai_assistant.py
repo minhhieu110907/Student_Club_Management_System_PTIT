@@ -512,6 +512,16 @@ def test_ai_stale_worker_fencing_and_concurrent_recovery_race() -> None:
                 session.commit()
 
             barrier = threading.Barrier(2)
+            second_finished = threading.Event()
+
+            class DeterministicRecoveryProvider:
+                def generate_reply(self, *, prompt, history, bound_request):
+                    second_finished.wait(timeout=5)
+                    return AIProviderResult(
+                        reply="Recovered once",
+                        provider="mock",
+                        model="mock-scms-v1",
+                    )
 
             def concurrent_recovery(idx: int) -> str:
                 barrier.wait(timeout=5)
@@ -525,9 +535,11 @@ def test_ai_stale_worker_fencing_and_concurrent_recovery_race() -> None:
                                 "mock", None, "gemini-2.5-flash", 15.0, 3, 32768, 15.0
                             ),
                             request_id=f"req-rec-{idx}",
+                            provider=DeterministicRecoveryProvider(),  # type: ignore[arg-type]
                         )
                         return f"OK:{res.turn_id}"
                     except AIConversationConflictError:
+                        second_finished.set()
                         return "CONFLICT"
 
             with ThreadPoolExecutor(max_workers=2) as rec_pool:

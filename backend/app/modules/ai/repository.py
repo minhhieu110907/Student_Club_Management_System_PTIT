@@ -106,18 +106,31 @@ def get_turn_by_request_key(
     return session.execute(stmt).scalar_one_or_none()
 
 
+def get_turn_by_id(session: Session, *, turn_id: int) -> AITurn | None:
+    stmt = select(AITurn).where(AITurn.id == turn_id).execution_options(populate_existing=True)
+    return session.execute(stmt).scalar_one_or_none()
+
+
 def get_assistant_message_for_turn(session: Session, *, turn_id: int) -> AIMessage | None:
-    stmt = select(AIMessage).where(
-        AIMessage.turn_id == turn_id,
-        AIMessage.role == "ASSISTANT",
+    stmt = (
+        select(AIMessage)
+        .where(
+            AIMessage.turn_id == turn_id,
+            AIMessage.role == "ASSISTANT",
+        )
+        .execution_options(populate_existing=True)
     )
     return session.execute(stmt).scalar_one_or_none()
 
 
 def get_usage_record_for_turn(session: Session, *, turn_id: int) -> AIUsageRecord | None:
-    stmt = select(AIUsageRecord).where(
-        AIUsageRecord.turn_id == turn_id,
-        AIUsageRecord.attempt_no == 1,
+    stmt = (
+        select(AIUsageRecord)
+        .where(
+            AIUsageRecord.turn_id == turn_id,
+            AIUsageRecord.attempt_no == 1,
+        )
+        .execution_options(populate_existing=True)
     )
     return session.execute(stmt).scalar_one_or_none()
 
@@ -127,6 +140,7 @@ def list_tool_executions_for_turn(session: Session, *, turn_id: int) -> list[AIT
         select(AIToolExecution)
         .where(AIToolExecution.turn_id == turn_id)
         .order_by(AIToolExecution.invocation_no.asc())
+        .execution_options(populate_existing=True)
     )
     return list(session.execute(stmt).scalars().all())
 

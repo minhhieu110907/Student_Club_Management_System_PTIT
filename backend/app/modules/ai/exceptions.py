@@ -16,6 +16,20 @@ class AIProviderUnavailableError(AppException):
         )
 
 
+class AITurnOutcomeUnconfirmedError(AppException):
+    def __init__(
+        self,
+        message: str = (
+            "AI turn outcome could not be confirmed; retry safely with the same request key"
+        ),
+    ) -> None:
+        super().__init__(
+            message,
+            status_code=503,
+            error_code="AI_TURN_OUTCOME_UNCONFIRMED",
+        )
+
+
 class AIProviderTimeoutError(AppException):
     def __init__(self, message: str = "AI request exceeded execution time budget") -> None:
         super().__init__(

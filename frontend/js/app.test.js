@@ -957,11 +957,17 @@ test("submitAiChat keeps key on network error, generic HTTP 500/502(non-JSON)/50
     }
     if (step === 6) {
       return response(503, {
+        error_code: "AI_TURN_OUTCOME_UNCONFIRMED",
+        message: "AI turn outcome could not be confirmed; retry safely with the same request key",
+      });
+    }
+    if (step === 7) {
+      return response(503, {
         error_code: "AI_PROVIDER_UNAVAILABLE",
         message: "AI service is currently unavailable",
       });
     }
-    if (step === 7) {
+    if (step === 8) {
       return response(409, {
         error_code: "AI_IDEMPOTENCY_KEY_REUSED",
         message: "Idempotency key reused with a different request payload",
@@ -978,32 +984,32 @@ test("submitAiChat keeps key on network error, generic HTTP 500/502(non-JSON)/50
     });
   };
 
-  // 1..5: Network error, generic 500, non-JSON 502, generic 503, AI_TURN_IN_PROGRESS -> keep key/msg/convId
-  for (let i = 0; i < 6; i += 1) {
+  // 1..6: Network error, generic 500, non-JSON 502, generic 503, AI_TURN_IN_PROGRESS, AI_TURN_OUTCOME_UNCONFIRMED -> keep key/msg/convId
+  for (let i = 0; i < 7; i += 1) {
     await auth.submitAiChat({ preventDefault() {} });
   }
   const initialKey = sentPayloads[0].client_request_key;
   assert.ok(initialKey);
-  for (let i = 1; i < 6; i += 1) {
+  for (let i = 1; i < 7; i += 1) {
     assert.equal(sentPayloads[i].client_request_key, initialKey);
     assert.equal(sentPayloads[i].message, "Retry question");
     assert.equal(sentPayloads[i].conversation_id, 12);
   }
-  // After step 6 (AI_PROVIDER_UNAVAILABLE terminal failure), pendingKey is cleared
+  // After step 7 (AI_PROVIDER_UNAVAILABLE terminal failure), pendingKey is cleared
   assert.equal(auth.aiUiState.pendingKey, null);
 
-  // 7: Explicit retry gets a new key; AI_IDEMPOTENCY_KEY_REUSED clears key without reusing old key
+  // 8: Explicit retry gets a new key; AI_IDEMPOTENCY_KEY_REUSED clears key without reusing old key
   await auth.submitAiChat({ preventDefault() {} });
-  assert.notEqual(sentPayloads[6].client_request_key, initialKey);
+  assert.notEqual(sentPayloads[7].client_request_key, initialKey);
   assert.equal(auth.aiUiState.pendingKey, null);
   assert.equal(
     nodes.get("#ai-chat-message").textContent,
     "Idempotency key reused with a different request payload",
   );
 
-  // 8: Success gets a fresh key and clears pending state
+  // 9: Success gets a fresh key and clears pending state
   await auth.submitAiChat({ preventDefault() {} });
-  assert.notEqual(sentPayloads[7].client_request_key, sentPayloads[6].client_request_key);
+  assert.notEqual(sentPayloads[8].client_request_key, sentPayloads[7].client_request_key);
   assert.equal(auth.aiUiState.pendingKey, null);
 });
 

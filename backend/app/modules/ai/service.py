@@ -7,7 +7,10 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import NoReturn
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,6 +26,7 @@ from app.modules.ai.exceptions import (
     AIToolBudgetExceededError,
     AIToolValidationError,
     AITurnInProgressError,
+    AITurnOutcomeUnconfirmedError,
 )
 from app.modules.ai.models import AIConversation, AIMessage, AIToolExecution, AITurn, AIUsageRecord
 from app.modules.ai.provider import AIProvider, build_ai_provider
@@ -39,6 +43,7 @@ from app.modules.ai.repository import (
     get_inflight_turn_for_update,
     get_owned_conversation,
     get_owned_conversation_for_update,
+    get_turn_by_id,
     get_turn_by_request_key,
     get_usage_record_for_turn,
     list_conversation_messages,
@@ -66,6 +71,18 @@ logger = logging.getLogger(__name__)
 _RETENTION_DAYS = 90
 _HISTORY_LIMIT = 10
 _LEASE_SAFETY_MARGIN_SECONDS = 15.0
+
+
+class FailurePersistenceStatus(StrEnum):
+    PERSISTED = "PERSISTED"
+    SUPERSEDED = "SUPERSEDED"
+    UNCONFIRMED = "UNCONFIRMED"
+
+
+@dataclass(frozen=True, slots=True)
+class FailurePersistenceResult:
+    status: FailurePersistenceStatus
+    observed_turn: AITurn | None = None
 
 
 def _utcnow() -> datetime:
@@ -416,7 +433,7 @@ def chat_with_assistant(
     except AppException as exc:
         if not lease_superseded:
             duration_ms = max(0, round((time.monotonic() - started) * 1000))
-            _record_turn_failure_safely(
+            persistence_result = _record_turn_failure_safely(
                 session,
                 turn_id=turn_id,
                 usage_id=usage_id,
@@ -425,6 +442,12 @@ def chat_with_assistant(
                 is_timeout=isinstance(exc, AIProviderTimeoutError),
                 duration_ms=duration_ms,
                 traces=bound_request.executor.traces if bound_request is not None else (),
+            )
+            return _resolve_failure_outcome(
+                session,
+                result=persistence_result,
+                payload_hash=payload_hash,
+                original_exc=exc,
             )
         raise
     except Exception as exc:
@@ -437,7 +460,7 @@ def chat_with_assistant(
                 "error_type": type(exc).__name__,
             },
         )
-        _record_turn_failure_safely(
+        persistence_result = _record_turn_failure_safely(
             session,
             turn_id=turn_id,
             usage_id=usage_id,
@@ -447,7 +470,12 @@ def chat_with_assistant(
             duration_ms=duration_ms,
             traces=bound_request.executor.traces if bound_request is not None else (),
         )
-        raise AIProviderUnavailableError("AI service encountered an unexpected error") from exc
+        return _resolve_failure_outcome(
+            session,
+            result=persistence_result,
+            payload_hash=payload_hash,
+            original_exc=exc,
+        )
 
     return AIChatResponse(
         conversation_id=conversation_id,
@@ -468,6 +496,50 @@ def chat_with_assistant(
     )
 
 
+def _read_turn_after_rollback(session: Session, *, turn_id: int) -> AITurn | None:
+    try:
+        return get_turn_by_id(session, turn_id=turn_id)
+    except Exception as read_exc:
+        logger.warning(
+            "ai_turn_readback_failed",
+            extra={
+                "turn_id": turn_id,
+                "error_type": type(read_exc).__name__,
+            },
+        )
+        return None
+
+
+def _raise_unconfirmed_outcome(original_exc: Exception) -> NoReturn:
+    raise AITurnOutcomeUnconfirmedError() from original_exc
+
+
+def _resolve_failure_outcome(
+    session: Session,
+    *,
+    result: FailurePersistenceResult,
+    payload_hash: bytes,
+    original_exc: Exception,
+) -> AIChatResponse:
+    if result.status == FailurePersistenceStatus.PERSISTED:
+        if isinstance(original_exc, AppException):
+            raise original_exc
+        raise AIProviderUnavailableError(
+            "AI service encountered an unexpected error"
+        ) from original_exc
+
+    if result.status == FailurePersistenceStatus.SUPERSEDED:
+        observed = result.observed_turn
+        if observed is not None and observed.status == "SUCCEEDED":
+            if observed.payload_hash != payload_hash:
+                raise AIIdempotencyKeyReusedError() from original_exc
+            return _build_cached_turn_response(session, turn=observed)
+        if observed is not None and observed.status == "FAILED":
+            _raise_saved_turn_failure(observed.error_code)
+
+    _raise_unconfirmed_outcome(original_exc)
+
+
 def _record_turn_failure_safely(
     session: Session,
     *,
@@ -478,7 +550,7 @@ def _record_turn_failure_safely(
     is_timeout: bool,
     duration_ms: int,
     traces: tuple[ToolExecutionTrace, ...],
-) -> None:
+) -> FailurePersistenceResult:
     try:
         finished_at = _utcnow()
         claimed = claim_turn_completion(
@@ -491,7 +563,16 @@ def _record_turn_failure_safely(
         )
         if not claimed:
             session.rollback()
-            return
+            observed = _read_turn_after_rollback(session, turn_id=turn_id)
+            if observed is None or observed.status in {"PENDING", "RUNNING"}:
+                return FailurePersistenceResult(
+                    status=FailurePersistenceStatus.UNCONFIRMED,
+                    observed_turn=observed,
+                )
+            return FailurePersistenceResult(
+                status=FailurePersistenceStatus.SUPERSEDED,
+                observed_turn=observed,
+            )
 
         persisted_usage = session.get(AIUsageRecord, usage_id)
         if persisted_usage is not None:
@@ -510,6 +591,7 @@ def _record_turn_failure_safely(
             ),
         )
         session.commit()
+        return FailurePersistenceResult(status=FailurePersistenceStatus.PERSISTED)
     except Exception as persist_exc:
         session.rollback()
         logger.warning(
@@ -518,6 +600,24 @@ def _record_turn_failure_safely(
                 "turn_id": turn_id,
                 "error_type": type(persist_exc).__name__,
             },
+        )
+        observed = _read_turn_after_rollback(session, turn_id=turn_id)
+        if observed is not None:
+            if observed.status == "SUCCEEDED":
+                return FailurePersistenceResult(
+                    status=FailurePersistenceStatus.SUPERSEDED,
+                    observed_turn=observed,
+                )
+            if observed.status == "FAILED":
+                status = (
+                    FailurePersistenceStatus.PERSISTED
+                    if observed.lease_generation == expected_generation
+                    else FailurePersistenceStatus.SUPERSEDED
+                )
+                return FailurePersistenceResult(status=status, observed_turn=observed)
+        return FailurePersistenceResult(
+            status=FailurePersistenceStatus.UNCONFIRMED,
+            observed_turn=observed,
         )
 
 
