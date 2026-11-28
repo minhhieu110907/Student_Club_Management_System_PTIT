@@ -881,3 +881,119 @@ def test_superseded_worker_returns_cached_response_when_observed_succeeded(monke
     assert res.reply == "Winner reply"
     assert res.message_id == 99
     assert fake_session.added_assistant_messages == 0
+
+
+def test_rollback_failures_do_not_mask_original_exception_or_break_classification(
+    monkeypatch,
+) -> None:
+    from contextlib import nullcontext
+
+    class BrokenRollbackSession:
+        def __init__(self, *, commit_error: Exception | None = None, rowcount: int = 1) -> None:
+            self._next_id = 1
+            self.commit_error = commit_error
+            self.rowcount = rowcount
+            self.commits = 0
+
+        def add(self, obj) -> None:
+            if getattr(obj, "id", None) is None:
+                obj.id = self._next_id
+                self._next_id += 1
+
+        def add_all(self, objs) -> None:
+            pass
+
+        def flush(self) -> None:
+            pass
+
+        def commit(self) -> None:
+            self.commits += 1
+            if self.commits > 1 and self.commit_error is not None:
+                raise self.commit_error
+
+        def rollback(self) -> None:
+            raise RuntimeError("rollback connection broken")
+
+        def get(self, model, ident):
+            return SimpleNamespace(id=ident, status="PENDING")
+
+        def execute(self, stmt):
+            return SimpleNamespace(rowcount=self.rowcount)
+
+        def get_bind(self):
+            return None
+
+    # 1. claim_turn_completion returns False and rollback raises; read-back sees RUNNING -> UNCONFIRMED
+    monkeypatch.setattr("app.modules.ai.service.claim_turn_completion", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        "app.modules.ai.service.get_turn_by_id",
+        lambda *a, **kw: SimpleNamespace(id=1, status="RUNNING", lease_generation=1),
+    )
+    s1 = BrokenRollbackSession(rowcount=0)
+    res1 = _record_turn_failure_safely(
+        s1,  # type: ignore[arg-type]
+        turn_id=1,
+        usage_id=1,
+        expected_generation=1,
+        error_code="AI_PROVIDER_TIMEOUT",
+        is_timeout=True,
+        duration_ms=10,
+        traces=(),
+    )
+    assert res1.status == FailurePersistenceStatus.UNCONFIRMED
+
+    # 2. Rollback raises but read-back confirms FAILED with expected_generation -> PERSISTED
+    monkeypatch.setattr(
+        "app.modules.ai.service.get_turn_by_id",
+        lambda *a, **kw: SimpleNamespace(
+            id=1, status="FAILED", lease_generation=1, error_code="AI_PROVIDER_TIMEOUT"
+        ),
+    )
+    res2 = _record_turn_failure_safely(
+        s1,  # type: ignore[arg-type]
+        turn_id=1,
+        usage_id=1,
+        expected_generation=1,
+        error_code="AI_PROVIDER_TIMEOUT",
+        is_timeout=True,
+        duration_ms=10,
+        traces=(),
+    )
+    assert res2.status == FailurePersistenceStatus.PERSISTED
+
+    # 3. Rollback and read-back both fail -> UNCONFIRMED
+    monkeypatch.setattr(
+        "app.modules.ai.service.get_turn_by_id",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("readback broken")),
+    )
+    res3 = _record_turn_failure_safely(
+        s1,  # type: ignore[arg-type]
+        turn_id=1,
+        usage_id=1,
+        expected_generation=1,
+        error_code="AI_PROVIDER_TIMEOUT",
+        is_timeout=True,
+        duration_ms=10,
+        traces=(),
+    )
+    assert res3.status == FailurePersistenceStatus.UNCONFIRMED
+
+    # 4. Commit fails and rollback also raises in chat_with_assistant -> AITurnOutcomeUnconfirmedError
+    # with original provider exception preserved as __cause__
+    monkeypatch.setattr("app.modules.ai.service.claim_turn_completion", lambda *a, **kw: True)
+    s4 = BrokenRollbackSession(commit_error=RuntimeError("commit lost"))
+    with pytest.raises(AITurnOutcomeUnconfirmedError) as exc_info:
+        chat_with_assistant(
+            AIChatRequest(message="Hi"),
+            _student(),
+            s4,  # type: ignore[arg-type]
+            settings=AISettings("mock", None, "gemini-2.5-flash", 15.0, 3, 32768, 15.0),
+            request_id="req-rb-fail",
+            provider=SimpleNamespace(
+                generate_reply=lambda **kwargs: (_ for _ in ()).throw(
+                    AIProviderTimeoutError("original provider timeout")
+                )
+            ),  # type: ignore[arg-type]
+            tool_session_factory=lambda: nullcontext(MagicMock()),  # type: ignore[arg-type]
+        )
+    assert isinstance(exc_info.value.__cause__, AIProviderTimeoutError)

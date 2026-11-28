@@ -496,7 +496,42 @@ def chat_with_assistant(
     )
 
 
+def _rollback_safely(session: Session, *, turn_id: int) -> bool:
+    try:
+        session.rollback()
+        return True
+    except Exception as rollback_exc:
+        logger.warning(
+            "ai_turn_rollback_failed",
+            extra={
+                "turn_id": turn_id,
+                "error_type": type(rollback_exc).__name__,
+            },
+        )
+        return False
+
+
 def _read_turn_after_rollback(session: Session, *, turn_id: int) -> AITurn | None:
+    if getattr(session, "is_active", True) is False:
+        bind = getattr(session, "get_bind", lambda: None)()
+        if bind is None:
+            return None
+        try:
+            read_session = sessionmaker(bind=bind, expire_on_commit=False)()
+            try:
+                return get_turn_by_id(read_session, turn_id=turn_id)
+            finally:
+                read_session.close()
+        except Exception as read_exc:
+            logger.warning(
+                "ai_turn_readback_failed",
+                extra={
+                    "turn_id": turn_id,
+                    "error_type": type(read_exc).__name__,
+                },
+            )
+            return None
+
     try:
         return get_turn_by_id(session, turn_id=turn_id)
     except Exception as read_exc:
@@ -508,6 +543,34 @@ def _read_turn_after_rollback(session: Session, *, turn_id: int) -> AITurn | Non
             },
         )
         return None
+
+
+def _classify_observed_turn(
+    observed: AITurn | None,
+    *,
+    expected_generation: int,
+) -> FailurePersistenceResult:
+    if observed is None:
+        return FailurePersistenceResult(
+            status=FailurePersistenceStatus.UNCONFIRMED,
+            observed_turn=None,
+        )
+    if observed.status == "SUCCEEDED":
+        return FailurePersistenceResult(
+            status=FailurePersistenceStatus.SUPERSEDED,
+            observed_turn=observed,
+        )
+    if observed.status == "FAILED":
+        status = (
+            FailurePersistenceStatus.PERSISTED
+            if observed.lease_generation == expected_generation
+            else FailurePersistenceStatus.SUPERSEDED
+        )
+        return FailurePersistenceResult(status=status, observed_turn=observed)
+    return FailurePersistenceResult(
+        status=FailurePersistenceStatus.UNCONFIRMED,
+        observed_turn=observed,
+    )
 
 
 def _raise_unconfirmed_outcome(original_exc: Exception) -> NoReturn:
@@ -562,17 +625,9 @@ def _record_turn_failure_safely(
             error_code=error_code[:64],
         )
         if not claimed:
-            session.rollback()
+            _rollback_safely(session, turn_id=turn_id)
             observed = _read_turn_after_rollback(session, turn_id=turn_id)
-            if observed is None or observed.status in {"PENDING", "RUNNING"}:
-                return FailurePersistenceResult(
-                    status=FailurePersistenceStatus.UNCONFIRMED,
-                    observed_turn=observed,
-                )
-            return FailurePersistenceResult(
-                status=FailurePersistenceStatus.SUPERSEDED,
-                observed_turn=observed,
-            )
+            return _classify_observed_turn(observed, expected_generation=expected_generation)
 
         persisted_usage = session.get(AIUsageRecord, usage_id)
         if persisted_usage is not None:
@@ -593,7 +648,7 @@ def _record_turn_failure_safely(
         session.commit()
         return FailurePersistenceResult(status=FailurePersistenceStatus.PERSISTED)
     except Exception as persist_exc:
-        session.rollback()
+        _rollback_safely(session, turn_id=turn_id)
         logger.warning(
             "ai_turn_failure_persistence_failed",
             extra={
@@ -602,23 +657,7 @@ def _record_turn_failure_safely(
             },
         )
         observed = _read_turn_after_rollback(session, turn_id=turn_id)
-        if observed is not None:
-            if observed.status == "SUCCEEDED":
-                return FailurePersistenceResult(
-                    status=FailurePersistenceStatus.SUPERSEDED,
-                    observed_turn=observed,
-                )
-            if observed.status == "FAILED":
-                status = (
-                    FailurePersistenceStatus.PERSISTED
-                    if observed.lease_generation == expected_generation
-                    else FailurePersistenceStatus.SUPERSEDED
-                )
-                return FailurePersistenceResult(status=status, observed_turn=observed)
-        return FailurePersistenceResult(
-            status=FailurePersistenceStatus.UNCONFIRMED,
-            observed_turn=observed,
-        )
+        return _classify_observed_turn(observed, expected_generation=expected_generation)
 
 
 def _build_tool_execution_rows(
